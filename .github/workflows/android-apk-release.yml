@@ -13,16 +13,6 @@ jobs:
   release-apk:
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    environment: release
-    env:
-      SCCACHE_BUCKET: rust-cache
-      SCCACHE_ENDPOINT: ${{ secrets.SCCACHE_R2_ENDPOINT }}
-      SCCACHE_REGION: auto
-      SCCACHE_S3_USE_SSL: "true"
-      SCCACHE_S3_KEY_PREFIX: ci/android
-      SCCACHE_LOG: info
-      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
 
     steps:
       - name: Checkout
@@ -53,8 +43,16 @@ jobs:
         with:
           targets: aarch64-linux-android,x86_64-linux-android
 
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            shared/rust-bridge/target
+          key: cargo-release-${{ runner.os }}-${{ hashFiles('shared/rust-bridge/Cargo.lock') }}
+          restore-keys: |
+            cargo-release-${{ runner.os }}-
 
       - name: Sync codex submodule
         run: ./tools/scripts/sync-codex.sh --preserve-current
@@ -65,26 +63,22 @@ jobs:
         with:
           path: |
             shared/rust-bridge/generated/kotlin
-          key: kotlin-bindings-${{ runner.os }}-${{ hashFiles('tools/scripts/sync-codex.sh', 'shared/rust-bridge/generate-bindings.sh', 'shared/rust-bridge/Cargo.toml', 'shared/rust-bridge/Cargo.lock', 'shared/rust-bridge/codex-mobile-client/src/**', 'shared/rust-bridge/uniffi-bindgen/**', 'patches/codex/**', 'shared/third_party/codex/codex-rs/app-server-protocol/src/protocol/**', 'shared/third_party/codex/codex-rs/protocol/src/**') }}
+          key: kotlin-bindings-release-${{ runner.os }}-${{ hashFiles('tools/scripts/sync-codex.sh', 'shared/rust-bridge/generate-bindings.sh', 'shared/rust-bridge/Cargo.toml', 'shared/rust-bridge/Cargo.lock', 'shared/rust-bridge/codex-mobile-client/src/**', 'shared/rust-bridge/uniffi-bindgen/**', 'patches/codex/**', 'shared/third_party/codex/codex-rs/app-server-protocol/src/protocol/**', 'shared/third_party/codex/codex-rs/protocol/src/**') }}
 
       - name: Generate Kotlin bindings
         if: steps.kotlin-bindings-cache.outputs.cache-hit != 'true'
         env:
-          RUSTC_WRAPPER: sccache
           CARGO_INCREMENTAL: "0"
         run: |
           cd shared/rust-bridge
           ./generate-bindings.sh
 
       - name: Install cargo-ndk
-        env:
-          RUSTC_WRAPPER: sccache
         run: cargo install cargo-ndk --locked
 
       - name: Build Rust JNI libs
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/30.0.14904198
-          RUSTC_WRAPPER: sccache
         run: |
           mkdir -p .build-stamps
           touch .build-stamps/sync .build-stamps/bindings-kotlin
