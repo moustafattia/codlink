@@ -14,6 +14,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "LitterAndroid"
+rootProject.name = "CodlinkAndroid"
 include(":app")
 include(":core:bridge")

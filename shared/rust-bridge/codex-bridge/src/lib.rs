@@ -2,8 +2,6 @@ use std::fs;
 use std::os::raw::c_char;
 use std::path::PathBuf;
 
-#[cfg(target_os = "ios")]
-mod ios_exec;
 pub mod voice_handoff;
 
 #[cfg(target_os = "android")]
@@ -18,13 +16,6 @@ mod android_jni;
 #[unsafe(no_mangle)]
 pub extern "C" fn codex_bridge_init() {
     init_codex_home();
-    #[cfg(target_os = "ios")]
-    init_tls_roots();
-    #[cfg(target_os = "ios")]
-    {
-        ios_exec::init();
-        codex_core::exec::set_ios_exec_hook(ios_exec::run_command);
-    }
 }
 
 fn init_codex_home() {
@@ -36,15 +27,6 @@ fn init_codex_home() {
 
     if let Ok(home) = std::env::var("HOME") {
         let home = PathBuf::from(home);
-        #[cfg(target_os = "ios")]
-        {
-            candidates.push(
-                home.join("Library")
-                    .join("Application Support")
-                    .join("codex"),
-            );
-            candidates.push(home.join("Documents").join(".codex"));
-        }
         candidates.push(home.join(".codex"));
     }
 
@@ -73,7 +55,7 @@ fn init_codex_home() {
     eprintln!("[codex-bridge] unable to initialize any writable CODEX_HOME location");
 }
 
-#[cfg(any(target_os = "ios", target_os = "android"))]
+#[cfg(target_os = "android")]
 pub(crate) fn init_tls_roots() {
     if let Some(existing) = std::env::var_os("SSL_CERT_FILE") {
         let existing_path = PathBuf::from(existing);
@@ -105,7 +87,7 @@ pub(crate) fn init_tls_roots() {
 }
 
 // ===========================================================================
-// Conversation hydration FFI (used by both platforms for standalone hydration)
+// Conversation hydration FFI (used for standalone hydration)
 // ===========================================================================
 
 use codex_app_server_protocol::Turn;

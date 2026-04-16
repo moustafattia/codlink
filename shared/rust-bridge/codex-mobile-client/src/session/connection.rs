@@ -76,18 +76,10 @@ impl Default for InProcessConfig {
     }
 }
 
-#[cfg(any(target_os = "ios", test))]
-static IOS_CACERT_PEM: &[u8] = include_bytes!("../../../codex-bridge/src/cacert.pem");
-
 #[allow(unused_mut)]
 fn prepare_in_process_config(
     mut config: InProcessConfig,
 ) -> Result<InProcessConfig, TransportError> {
-    #[cfg(target_os = "ios")]
-    {
-        config = prepare_ios_in_process_config(config)?;
-    }
-
     #[cfg(target_os = "android")]
     {
         config = prepare_android_in_process_config(config)?;
@@ -158,147 +150,6 @@ fn prepare_android_in_process_config(
     Ok(config)
 }
 
-#[cfg(any(target_os = "ios", test))]
-#[cfg_attr(test, allow(dead_code))]
-fn prepare_ios_in_process_config(
-    mut config: InProcessConfig,
-) -> Result<InProcessConfig, TransportError> {
-    let home_dir = std::env::var_os("HOME").map(PathBuf::from);
-    let docs_root = home_dir.as_ref().map(|home| home.join("Documents"));
-
-    if let Some(root) = &docs_root {
-        for relative in ["home/codex", "tmp", "var/log", "etc"] {
-            std::fs::create_dir_all(root.join(relative)).map_err(|e| {
-                TransportError::ConnectionFailed(format!(
-                    "failed to create local sandbox directory {:?}: {e}",
-                    root.join(relative)
-                ))
-            })?;
-        }
-    }
-
-    if config.working_directory.is_none()
-        && let Some(root) = &docs_root
-    {
-        config.working_directory = Some(root.join("home").join("codex"));
-    }
-
-    if let Some(ref working_directory) = config.working_directory {
-        std::fs::create_dir_all(working_directory).map_err(|e| {
-            TransportError::ConnectionFailed(format!(
-                "failed to create local working directory {:?}: {e}",
-                working_directory
-            ))
-        })?;
-        unsafe {
-            std::env::set_var("SSH_HOME", working_directory);
-            std::env::set_var("CURL_HOME", working_directory);
-        }
-    }
-
-    if config.codex_home.is_none() {
-        config.codex_home = Some(resolve_ios_codex_home(&home_dir)?);
-    }
-
-    if let Some(ref codex_home) = config.codex_home {
-        config.codex_home = Some(prepare_ios_runtime_environment(codex_home)?);
-    }
-
-    Ok(config)
-}
-
-#[cfg(any(target_os = "ios", test))]
-#[cfg_attr(test, allow(dead_code))]
-fn resolve_ios_codex_home(home_dir: &Option<PathBuf>) -> Result<PathBuf, TransportError> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-
-    if let Ok(existing) = std::env::var("CODEX_HOME")
-        && !existing.is_empty()
-    {
-        candidates.push(PathBuf::from(existing));
-    }
-
-    if let Some(home) = home_dir {
-        candidates.push(
-            home.join("Library")
-                .join("Application Support")
-                .join("codex"),
-        );
-        candidates.push(home.join("Documents").join(".codex"));
-        candidates.push(home.join(".codex"));
-    }
-
-    if let Ok(tmpdir) = std::env::var("TMPDIR") {
-        candidates.push(PathBuf::from(tmpdir).join("codex-home"));
-    }
-
-    for candidate in candidates {
-        match std::fs::create_dir_all(&candidate) {
-            Ok(()) => return Ok(candidate),
-            Err(err) => {
-                warn!(
-                    "failed to create CODEX_HOME candidate {:?}: {err}",
-                    candidate
-                );
-            }
-        }
-    }
-
-    Err(TransportError::ConnectionFailed(
-        "unable to initialize any writable CODEX_HOME location".to_string(),
-    ))
-}
-
-#[cfg(any(target_os = "ios", test))]
-fn prepare_ios_runtime_environment(
-    codex_home: &std::path::Path,
-) -> Result<PathBuf, TransportError> {
-    std::fs::create_dir_all(codex_home).map_err(|e| {
-        TransportError::ConnectionFailed(format!(
-            "failed to create CODEX_HOME {:?}: {e}",
-            codex_home
-        ))
-    })?;
-
-    let canonical = codex_home
-        .canonicalize()
-        .unwrap_or_else(|_| codex_home.to_path_buf());
-    unsafe {
-        std::env::set_var("CODEX_HOME", &canonical);
-    }
-    init_ios_tls_roots(&canonical)?;
-
-    Ok(canonical)
-}
-
-#[cfg(any(target_os = "ios", test))]
-fn init_ios_tls_roots(codex_home: &std::path::Path) -> Result<(), TransportError> {
-    if let Some(existing) = std::env::var_os("SSL_CERT_FILE") {
-        let existing_path = std::path::PathBuf::from(existing);
-        if existing_path.is_file() {
-            return Ok(());
-        }
-        warn!(
-            "replacing stale SSL_CERT_FILE {:?} with a regenerated local bundle",
-            existing_path
-        );
-    }
-
-    let pem_path = codex_home.join("cacert.pem");
-    if !pem_path.exists() {
-        std::fs::write(&pem_path, IOS_CACERT_PEM).map_err(|e| {
-            TransportError::ConnectionFailed(format!(
-                "failed to write local TLS roots {:?}: {e}",
-                pem_path
-            ))
-        })?;
-    }
-
-    unsafe {
-        std::env::set_var("SSL_CERT_FILE", &pem_path);
-    }
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // ServerConfig
@@ -546,7 +397,7 @@ impl ServerSession {
             enable_codex_api_key_env: true,
             initialize: InitializeParams {
                 client_info: ClientInfo {
-                    name: "Litter".to_string(),
+                    name: "Codlink".to_string(),
                     version: "1.0".to_string(),
                     title: None,
                 },
@@ -1065,7 +916,7 @@ fn remote_connect_args(config: &ServerConfig) -> (String, RemoteAppServerConnect
     let args = RemoteAppServerConnectArgs {
         websocket_url: url.clone(),
         auth_token: None,
-        client_name: "Litter".to_string(),
+        client_name: "Codlink".to_string(),
         client_version: "1.0".to_string(),
         experimental_api: true,
         opt_out_notification_methods: Vec::new(),
@@ -1078,13 +929,6 @@ fn remote_connect_args(config: &ServerConfig) -> (String, RemoteAppServerConnect
 async fn connect_remote_client(
     args: &RemoteAppServerConnectArgs,
 ) -> Result<AppServerClient, TransportError> {
-    #[cfg(target_os = "ios")]
-    {
-        let home_dir = std::env::var_os("HOME").map(PathBuf::from);
-        let codex_home = resolve_ios_codex_home(&home_dir)?;
-        let _ = prepare_ios_runtime_environment(&codex_home)?;
-    }
-
     Ok(AppServerClient::Remote(
         RemoteAppServerClient::connect(args.clone())
             .await
@@ -1460,7 +1304,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock should be after unix epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("litter-{label}-{nanos}"))
+        std::env::temp_dir().join(format!("codlink-{label}-{nanos}"))
     }
 
     #[test]
@@ -1832,52 +1676,4 @@ mod tests {
         assert!(config.working_directory.is_none());
     }
 
-    #[test]
-    fn prepare_ios_runtime_environment_sets_codex_home_and_tls_bundle() {
-        let _guard = env_lock().lock().expect("env lock should not be poisoned");
-        let original_codex_home = std::env::var_os("CODEX_HOME");
-        let original_ssl_cert_file = std::env::var_os("SSL_CERT_FILE");
-        let codex_home = unique_temp_path("ios-runtime");
-
-        unsafe {
-            std::env::set_var("CODEX_HOME", &codex_home);
-            std::env::remove_var("SSL_CERT_FILE");
-        }
-
-        let canonical = prepare_ios_runtime_environment(&codex_home)
-            .expect("ios runtime environment should initialize");
-        let pem_path = canonical.join("cacert.pem");
-
-        assert_eq!(
-            std::env::var_os("CODEX_HOME"),
-            Some(canonical.clone().into())
-        );
-        assert_eq!(
-            std::env::var_os("SSL_CERT_FILE"),
-            Some(pem_path.clone().into())
-        );
-        assert!(pem_path.is_file(), "cacert.pem should be written");
-
-        if let Some(value) = original_codex_home {
-            unsafe {
-                std::env::set_var("CODEX_HOME", value);
-            }
-        } else {
-            unsafe {
-                std::env::remove_var("CODEX_HOME");
-            }
-        }
-
-        if let Some(value) = original_ssl_cert_file {
-            unsafe {
-                std::env::set_var("SSL_CERT_FILE", value);
-            }
-        } else {
-            unsafe {
-                std::env::remove_var("SSL_CERT_FILE");
-            }
-        }
-
-        let _ = std::fs::remove_dir_all(codex_home);
-    }
 }

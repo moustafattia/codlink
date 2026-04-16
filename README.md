@@ -1,68 +1,82 @@
-# litter
+# codlink
 
-<p align="center">
-  <img src="apps/ios/Sources/Litter/Resources/brand_logo.png" alt="litter logo" width="180" />
-</p>
+Android client for [OpenAI's Codex](https://github.com/openai/codex). Connect to local or remote Codex app-servers, manage threads, and run agentic coding workflows from your phone.
 
-<p align="center">
-  Native iOS + Android client for <a href="https://github.com/openai/codex">Codex</a>. Connect to local or remote servers, manage sessions, and run agentic coding workflows from your phone.
-</p>
-
-<p align="center">
-  <a href="https://kittylitter.app"><img src="docs/badges/website.svg" alt="kittylitter.app" /></a>
-  &nbsp;
-  <a href="https://apps.apple.com/us/app/kittylitter/id6759521788"><img src="docs/badges/app-store.svg" alt="App Store" /></a>
-  &nbsp;
-  <a href="https://kittylitter.app/android-beta"><img src="docs/badges/android-beta.svg" alt="Android Beta" /></a>
-</p>
-
-## Screenshots (iOS)
-
-<p align="center">
-  <img src="docs/screenshots/01-hero-iphone-1320x2868.png" alt="Home" width="200" />
-  <img src="docs/screenshots/02-remote-iphone-1320x2868.png" alt="Remote servers" width="200" />
-  <img src="docs/screenshots/07-generative-ui-iphone-1320x2868.png" alt="Generative UI" width="200" />
-  <img src="docs/screenshots/05-realtime-voice-iphone-1320x2868.png" alt="Realtime voice" width="200" />
-</p>
+Forked from [dnakov/litter](https://github.com/dnakov/litter); iOS stripped, Android-first.
 
 ## Quick Start
 
 ```bash
-make ios-device-fast   # fast device build
-make ios-sim-fast      # fast simulator build
-make android-emulator-fast  # fast Android emulator build
+# One-time: sync the upstream Codex submodule + apply local patches
+make sync
+
+# Fast dev build for the connected emulator (auto-detects host ABI)
+make android-emulator-fast
+
+# Build a debug APK for a real device (arm64-v8a by default)
+make android
+
+# Install the debug APK on a connected device and stream logcat
+make android-device-run
 ```
 
-See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for prerequisites, full build options, TestFlight/App Store release, and SSH setup.
+The debug APK is written to `apps/android/app/build/outputs/apk/debug/app-debug.apk`.
+
+## Prerequisites (Linux)
+
+Install these once on the build host:
+
+- **JDK 17** (Temurin 17 recommended): `sudo apt install temurin-17-jdk` or equivalent.
+- **Android SDK** with `platform-tools`, `platforms;android-35`, `build-tools;35.0.0`, and an NDK at `ndk;30.0.14904198` (install via `sdkmanager`). Set `ANDROID_SDK_ROOT` (or `ANDROID_HOME`) to the SDK root.
+- **Rust via rustup** — do NOT use a distro `rust` package. `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`.
+- **cargo-ndk**: `cargo install cargo-ndk --locked`.
+- **System packages** for building the vendored `webrtc-audio-processing-sys`:
+  `sudo apt install pkg-config libssl-dev libcap-dev clang cmake meson ninja-build`.
+
+Make auto-detects `ANDROID_SDK_ROOT` from `$ANDROID_HOME` or `$HOME/Android/Sdk`, and finds the NDK under `$ANDROID_SDK_ROOT/ndk/*`. Override via `.env` at the repo root if needed.
 
 ## Repository Layout
 
 ```
-apps/ios/                  iOS app (Litter scheme, project.yml is source of truth)
-apps/android/              Android app (Compose UI, Gradle build)
+apps/android/                Android app (Compose UI, Gradle build)
 shared/rust-bridge/
-  codex-mobile-client/     Shared Rust client crate + UniFFI surface (iOS & Android)
-  codex-ios-audio/         iOS-only audio/AEC crate
-shared/third_party/codex/  Upstream Codex submodule
-patches/codex/             Local patch set applied during builds
-tools/scripts/             Cross-platform helper scripts
+  codex-mobile-client/       Shared Rust client crate + UniFFI surface
+  codex-bridge/              Android JNI shim (libcodex_bridge.so)
+  codex-tui/                 Optional developer TUI
+shared/third_party/codex/    Upstream Codex submodule
+patches/codex/               Local patch set applied during builds
+tools/scripts/               Helper scripts (sync-codex, build-android-rust, deploy-android-ondevice)
 ```
 
 ## Architecture
 
-Both platforms share a single Rust core (`codex-mobile-client`) via UniFFI-generated bindings. Platform code (Swift/Kotlin) stays thin: UI, permissions, notifications, and platform APIs only. Session state, streaming, hydration, discovery, and auth logic live in Rust.
+One Rust core (`codex-mobile-client`) exposes a UniFFI surface consumed by Kotlin. Platform code stays thin: UI, permissions, notifications, and Android-only services. Session state, streaming, hydration, discovery, SSH, and auth logic live in Rust.
 
 ## Make Targets
 
 | Target | Description |
 |---|---|
-| `make ios-device-fast` | Fast device build (raw staticlib) |
-| `make ios-sim-fast` | Fast simulator build |
-| `make ios` | Full package lane (device + sim + xcframework) |
-| `make android-emulator-fast` | Fast Android emulator build |
-| `make android` | Full Android pipeline |
+| `make android` | Full Android debug build (default ABI `arm64-v8a`) |
+| `make android-emulator-fast` | Host-ABI debug build for the local emulator |
+| `make android-emulator-run` | Build + install + launch on a running emulator |
+| `make android-device-run` | Build + install + launch on a connected device, streams logcat |
+| `make android-release` | Release build, multi-ABI (`arm64-v8a,x86_64`) |
+| `make rust-android` | Only cross-compile the Rust JNI libs |
+| `make bindings` | Regenerate UniFFI Kotlin bindings |
 | `make rust-check` | Host `cargo check` for shared Rust crates |
 | `make rust-test` | Host `cargo test` for shared Rust crates |
-| `make bindings` | Regenerate UniFFI Swift + Kotlin bindings |
-| `make xcgen` | Regenerate Xcode project from `project.yml` |
-| `make clean` | Remove all build artifacts |
+| `make sync` | Sync Codex submodule + apply patches |
+| `make clean` | Wipe Rust + Android build outputs and stamp cache |
+
+Run `make help` for the full list.
+
+## Release APK Signing
+
+For release builds, set these env vars (or pass as Gradle `-P` properties) so the upload signing config activates:
+
+- `CODLINK_UPLOAD_STORE_FILE`
+- `CODLINK_UPLOAD_STORE_PASSWORD`
+- `CODLINK_UPLOAD_KEY_ALIAS`
+- `CODLINK_UPLOAD_KEY_PASSWORD`
+
+If unset, `make android-release` builds an unsigned release APK.

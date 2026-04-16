@@ -1,12 +1,6 @@
-//! Shared mobile client library for iOS / Android.
+//! Shared mobile client library for the Codlink Android app.
 //!
-//! This crate owns the single public UniFFI surface for mobile. Keep shared
-//! business logic here so Swift/Kotlin only compile one binding set.
-
-#[cfg(target_os = "ios")]
-mod aec;
-#[cfg(target_os = "ios")]
-mod ios_exec;
+//! This crate owns the single public UniFFI surface used by the Kotlin app.
 
 pub mod conversation;
 pub mod conversation_uniffi;

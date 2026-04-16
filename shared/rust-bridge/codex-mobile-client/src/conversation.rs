@@ -869,7 +869,7 @@ mod tests {
                             "confidence_score": 0.97,
                             "priority": 1,
                             "code_location": {
-                                "absolute_file_path": "/Users/sigkitten/dev/litter/shared/rust-bridge/codex-mobile-client/src/mobile_client_impl.rs",
+                                "absolute_file_path": "/Users/codlink/dev/litter/shared/rust-bridge/codex-mobile-client/src/mobile_client_impl.rs",
                                 "line_range": { "start": 799, "end": 815 }
                             }
                         }

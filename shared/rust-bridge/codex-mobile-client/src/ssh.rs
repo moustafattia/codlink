@@ -1207,25 +1207,25 @@ printf 'shell=%s\n' "${{SHELL:-}}"
 printf 'path=%s\n' "${{PATH:-}}"
 printf 'pnpm_home=%s\n' "${{PNPM_HOME:-}}"
 printf 'nvm_bin=%s\n' "${{NVM_BIN:-}}"
-printf 'npm_prefix=%s\n' "$_litter_npm_prefix"
-printf 'pnpm_global_bin=%s\n' "$_litter_pnpm_global_bin"
-printf 'npm_global_bin=%s\n' "$_litter_npm_global_bin"
+printf 'npm_prefix=%s\n' "$_codlink_npm_prefix"
+printf 'pnpm_global_bin=%s\n' "$_codlink_pnpm_global_bin"
+printf 'npm_global_bin=%s\n' "$_codlink_npm_global_bin"
 printf 'whoami='; whoami 2>/dev/null || true
 printf 'pwd='; pwd 2>/dev/null || true
 printf 'command -v codex='
 command -v codex 2>/dev/null || printf '<missing>'
 printf '\n'
 for candidate in \
-  "$HOME/.litter/bin/codex" \
-  "$HOME/.litter/codex/node_modules/.bin/codex" \
+  "$HOME/.codlink/bin/codex" \
+  "$HOME/.codlink/codex/node_modules/.bin/codex" \
   "$HOME/.volta/bin/codex" \
   "$HOME/.local/bin/codex" \
   "${{PNPM_HOME:-}}/codex" \
   "${{NVM_BIN:-}}/codex" \
   "${{VOLTA_HOME:+$VOLTA_HOME/bin/codex}}" \
   "${{CARGO_HOME:-$HOME/.cargo}}/bin/codex" \
-  "${{_litter_npm_global_bin:-}}/codex" \
-  "${{_litter_pnpm_global_bin:-}}/codex" \
+  "${{_codlink_npm_global_bin:-}}/codex" \
+  "${{_codlink_pnpm_global_bin:-}}/codex" \
   "/opt/homebrew/bin/codex" \
   "/usr/local/bin/codex" 
 do
@@ -1579,15 +1579,15 @@ tag={tag}
 asset_name={asset_name}
 binary_name={binary_name}
 download_url={download_url}
-dest_dir="$HOME/.litter/codex/$tag"
+dest_dir="$HOME/.codlink/codex/$tag"
 dest_bin="$dest_dir/codex"
-stable_bin="$HOME/.litter/bin/codex"
-tmpdir="$(mktemp -d "${{TMPDIR:-/tmp}}/litter-codex.XXXXXX")"
+stable_bin="$HOME/.codlink/bin/codex"
+tmpdir="$(mktemp -d "${{TMPDIR:-/tmp}}/codlink-codex.XXXXXX")"
 cleanup() {{
   rm -rf "$tmpdir"
 }}
 trap cleanup EXIT
-mkdir -p "$dest_dir" "$HOME/.litter/bin"
+mkdir -p "$dest_dir" "$HOME/.codlink/bin"
 if [ ! -x "$dest_bin" ]; then
   archive_path="$tmpdir/$asset_name"
   if command -v curl >/dev/null 2>&1; then
@@ -1634,19 +1634,19 @@ printf '%s' "$stable_bin""#,
             "ssh install codex completed platform={} path={}",
             remote_platform_name(platform),
             if installed_path.is_empty() {
-                "$HOME/.litter/bin/codex"
+                "$HOME/.codlink/bin/codex"
             } else {
                 installed_path
             }
         );
         Ok(RemoteCodexBinary::Codex(if installed_path.is_empty() {
-            "$HOME/.litter/bin/codex".to_string()
+            "$HOME/.codlink/bin/codex".to_string()
         } else {
             installed_path.to_string()
         }))
     }
 
-    /// Install Codex via npm into `~/.litter/codex/` (works on Windows and
+    /// Install Codex via npm into `~/.codlink/codex/` (works on Windows and
     /// as a POSIX fallback when no binary release is available).
     pub(crate) async fn install_codex_via_npm(
         &self,
@@ -1659,24 +1659,24 @@ printf '%s' "$stable_bin""#,
         let script = match shell {
             RemoteShell::PowerShell => {
                 r#"$ErrorActionPreference = 'Stop'
-$litterDir = Join-Path $env:USERPROFILE '.litter\codex'
-if (-not (Test-Path $litterDir)) { New-Item -ItemType Directory -Path $litterDir -Force | Out-Null }
-Set-Location $litterDir
+$codlinkDir = Join-Path $env:USERPROFILE '.codlink\codex'
+if (-not (Test-Path $codlinkDir)) { New-Item -ItemType Directory -Path $codlinkDir -Force | Out-Null }
+Set-Location $codlinkDir
 if (-not (Test-Path 'package.json')) { npm init -y 2>$null | Out-Null }
 npm install @openai/codex 2>$null | Out-Null
-$bin = Join-Path $litterDir 'node_modules\.bin\codex.cmd'
+$bin = Join-Path $codlinkDir 'node_modules\.bin\codex.cmd'
 if (Test-Path $bin) { Write-Output "CODEX_PATH:$bin" } else { Write-Error 'codex.cmd not found after install'; exit 1 }"#.to_string()
             }
             RemoteShell::Posix => {
                 format!(
                     r#"{profile_init}
 set -e
-litter_dir="$HOME/.litter/codex"
-mkdir -p "$litter_dir"
-cd "$litter_dir"
+codlink_dir="$HOME/.codlink/codex"
+mkdir -p "$codlink_dir"
+cd "$codlink_dir"
 [ -f package.json ] || npm init -y >/dev/null 2>&1
 npm install @openai/codex >/dev/null 2>&1
-bin="$litter_dir/node_modules/.bin/codex"
+bin="$codlink_dir/node_modules/.bin/codex"
 if [ -x "$bin" ]; then printf 'CODEX_PATH:%s' "$bin"; else echo "codex not found after install" >&2; exit 1; fi"#,
                     profile_init = PROFILE_INIT
                 )
@@ -1836,72 +1836,72 @@ async fn proxy_connection(
 /// Runs each file in a subshell so shell-specific syntax cannot crash the
 /// parent `/bin/sh` process, then imports the resulting PATH into the current
 /// shell via a temp file.
-const PROFILE_INIT: &str = r#"_litter_pf="/tmp/.litter_path_$$"; for f in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.zprofile" "$HOME/.zshrc"; do [ -f "$f" ] && (. "$f" 2>/dev/null; echo "$PATH") > "$_litter_pf" 2>/dev/null && PATH="$(cat "$_litter_pf")" ; done; rm -f "$_litter_pf" 2>/dev/null;"#;
+const PROFILE_INIT: &str = r#"_codlink_pf="/tmp/.codlink_path_$$"; for f in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.zprofile" "$HOME/.zshrc"; do [ -f "$f" ] && (. "$f" 2>/dev/null; echo "$PATH") > "$_codlink_pf" 2>/dev/null && PATH="$(cat "$_codlink_pf")" ; done; rm -f "$_codlink_pf" 2>/dev/null;"#;
 
 /// Shell snippet that probes npm/pnpm for their global binary directories.
-/// Sets `_litter_npm_prefix`, `_litter_npm_global_bin`, and
-/// `_litter_pnpm_global_bin`.
-const PACKAGE_MANAGER_PROBE: &str = r#"_litter_npm_prefix=""
-_litter_npm_global_bin=""
-_litter_pnpm_global_bin=""
+/// Sets `_codlink_npm_prefix`, `_codlink_npm_global_bin`, and
+/// `_codlink_pnpm_global_bin`.
+const PACKAGE_MANAGER_PROBE: &str = r#"_codlink_npm_prefix=""
+_codlink_npm_global_bin=""
+_codlink_pnpm_global_bin=""
 if command -v npm >/dev/null 2>&1; then
-  _litter_npm_prefix="$(npm config get prefix 2>/dev/null || true)"
-  case "$_litter_npm_prefix" in
+  _codlink_npm_prefix="$(npm config get prefix 2>/dev/null || true)"
+  case "$_codlink_npm_prefix" in
     "" | "undefined" | "null")
-      _litter_npm_prefix=""
+      _codlink_npm_prefix=""
       ;;
     *)
-      _litter_npm_global_bin="$_litter_npm_prefix/bin"
+      _codlink_npm_global_bin="$_codlink_npm_prefix/bin"
       ;;
   esac
 fi
 if command -v pnpm >/dev/null 2>&1; then
-  _litter_pnpm_global_bin="$(pnpm bin -g 2>/dev/null || true)"
+  _codlink_pnpm_global_bin="$(pnpm bin -g 2>/dev/null || true)"
 fi"#;
 
 fn resolve_codex_binary_script_posix() -> String {
     format!(
         r#"{profile_init}
-_litter_emit_candidate() {{
-  _litter_selector="$1"
-  _litter_path="$2"
-  if [ -n "$_litter_path" ] && [ -f "$_litter_path" ] && [ -x "$_litter_path" ]; then
-    printf '%s:%s' "$_litter_selector" "$_litter_path"
+_codlink_emit_candidate() {{
+  _codlink_selector="$1"
+  _codlink_path="$2"
+  if [ -n "$_codlink_path" ] && [ -f "$_codlink_path" ] && [ -x "$_codlink_path" ]; then
+    printf '%s:%s' "$_codlink_selector" "$_codlink_path"
     exit 0
   fi
 }}
-_litter_emit_from_dir() {{
-  _litter_selector="$1"
-  _litter_name="$2"
-  _litter_dir="$3"
-  if [ -n "$_litter_dir" ]; then
-    _litter_emit_candidate "$_litter_selector" "$_litter_dir/$_litter_name"
+_codlink_emit_from_dir() {{
+  _codlink_selector="$1"
+  _codlink_name="$2"
+  _codlink_dir="$3"
+  if [ -n "$_codlink_dir" ]; then
+    _codlink_emit_candidate "$_codlink_selector" "$_codlink_dir/$_codlink_name"
   fi
 }}
-_litter_emit_candidate codex "$HOME/.litter/bin/codex"
-_litter_emit_candidate codex "$HOME/.litter/codex/node_modules/.bin/codex"
-_litter_emit_candidate codex "$(command -v codex 2>/dev/null || true)"
-_litter_emit_candidate codex "$HOME/.volta/bin/codex"
-_litter_emit_candidate codex "$HOME/.local/bin/codex"
-_litter_emit_from_dir codex codex "${{PNPM_HOME:-}}"
-_litter_emit_from_dir codex codex "${{NVM_BIN:-}}"
-_litter_emit_from_dir codex codex "${{VOLTA_HOME:+$VOLTA_HOME/bin}}"
-_litter_emit_from_dir codex codex "${{CARGO_HOME:-$HOME/.cargo}}/bin"
-_litter_emit_candidate codex "/opt/homebrew/bin/codex"
-_litter_emit_candidate codex "/usr/local/bin/codex"
+_codlink_emit_candidate codex "$HOME/.codlink/bin/codex"
+_codlink_emit_candidate codex "$HOME/.codlink/codex/node_modules/.bin/codex"
+_codlink_emit_candidate codex "$(command -v codex 2>/dev/null || true)"
+_codlink_emit_candidate codex "$HOME/.volta/bin/codex"
+_codlink_emit_candidate codex "$HOME/.local/bin/codex"
+_codlink_emit_from_dir codex codex "${{PNPM_HOME:-}}"
+_codlink_emit_from_dir codex codex "${{NVM_BIN:-}}"
+_codlink_emit_from_dir codex codex "${{VOLTA_HOME:+$VOLTA_HOME/bin}}"
+_codlink_emit_from_dir codex codex "${{CARGO_HOME:-$HOME/.cargo}}/bin"
+_codlink_emit_candidate codex "/opt/homebrew/bin/codex"
+_codlink_emit_candidate codex "/usr/local/bin/codex"
 {pkg_probe}
-_litter_emit_from_dir codex codex "$_litter_npm_global_bin"
-_litter_emit_from_dir codex codex "$_litter_pnpm_global_bin""#,
+_codlink_emit_from_dir codex codex "$_codlink_npm_global_bin"
+_codlink_emit_from_dir codex codex "$_codlink_pnpm_global_bin""#,
         profile_init = PROFILE_INIT,
         pkg_probe = PACKAGE_MANAGER_PROBE
     )
 }
 
 fn resolve_codex_binary_script_powershell() -> String {
-    r#"$litterBin = Join-Path $env:USERPROFILE '.litter\bin\codex.cmd'
-if (Test-Path $litterBin) { Write-Output "codex:$litterBin"; exit 0 }
-$litterNpm = Join-Path $env:USERPROFILE '.litter\codex\node_modules\.bin\codex.cmd'
-if (Test-Path $litterNpm) { Write-Output "codex:$litterNpm"; exit 0 }
+    r#"$codlinkBin = Join-Path $env:USERPROFILE '.codlink\bin\codex.cmd'
+if (Test-Path $codlinkBin) { Write-Output "codex:$codlinkBin"; exit 0 }
+$codlinkNpm = Join-Path $env:USERPROFILE '.codlink\codex\node_modules\.bin\codex.cmd'
+if (Test-Path $codlinkNpm) { Write-Output "codex:$codlinkNpm"; exit 0 }
 $found = Get-Command codex -ErrorAction SilentlyContinue
 if ($found) { Write-Output "codex:$($found.Source)"; exit 0 }"#
         .to_string()
@@ -2171,7 +2171,7 @@ async fn fetch_latest_stable_codex_release(
 ) -> Result<ResolvedCodexRelease, SshError> {
     let releases = reqwest::Client::new()
         .get("https://api.github.com/repos/openai/codex/releases?per_page=30")
-        .header(reqwest::header::USER_AGENT, "litter-codex-mobile")
+        .header(reqwest::header::USER_AGENT, "codlink-codex-mobile")
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()
         .await

@@ -1,0 +1,1223 @@
+package com.codlink.app.ui.conversation
+
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.sp
+import com.codlink.app.state.ComposerImageAttachment
+import com.codlink.app.state.AppComposerPayload
+import com.codlink.app.state.VoiceTranscriptionManager
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import uniffi.codex_mobile_client.AuthStatusRequest
+import uniffi.codex_mobile_client.AppSearchFilesRequest
+import uniffi.codex_mobile_client.PendingUserInputAnswer
+import uniffi.codex_mobile_client.PendingUserInputRequest
+import uniffi.codex_mobile_client.ReasoningEffort
+import uniffi.codex_mobile_client.ServiceTier
+import com.codlink.app.ui.LocalAppModel
+import com.codlink.app.ui.BerkeleyMono
+import com.codlink.app.ui.CodlinkTextStyle
+import com.codlink.app.ui.CodlinkTheme
+import com.codlink.app.ui.scaled
+import java.io.ByteArrayOutputStream
+import kotlinx.coroutines.launch
+import uniffi.codex_mobile_client.ThreadKey
+import uniffi.codex_mobile_client.AppInterruptTurnRequest
+import uniffi.codex_mobile_client.AppQueuedFollowUpKind
+import uniffi.codex_mobile_client.AppQueuedFollowUpPreview
+
+/** Slash command definitions matching iOS. */
+internal data class SlashCommand(val name: String, val description: String)
+internal data class SlashInvocation(val command: SlashCommand, val args: String?)
+data class ActiveTaskSummary(val progress: String, val label: String)
+
+private val SLASH_COMMANDS = listOf(
+    SlashCommand("plan", "Switch collaboration mode"),
+    SlashCommand("model", "Change model or reasoning effort"),
+    SlashCommand("new", "Start a new session"),
+    SlashCommand("fork", "Fork this conversation"),
+    SlashCommand("rename", "Rename this session"),
+    SlashCommand("review", "Start a code review"),
+    SlashCommand("resume", "Browse sessions"),
+    SlashCommand("skills", "List available skills"),
+    SlashCommand("permissions", "Change permissions"),
+    SlashCommand("experimental", "Toggle experimental features"),
+)
+
+/**
+ * Bottom composer bar with text input, send, voice, slash commands,
+ * @file search, and inline pending user input.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ComposerBar(
+    threadKey: ThreadKey,
+    collaborationMode: uniffi.codex_mobile_client.AppModeKind,
+    activePlanProgress: uniffi.codex_mobile_client.AppPlanProgressSnapshot? = null,
+    activeTurnId: String?,
+    contextPercent: Int?,
+    isThinking: Boolean,
+    activeTaskSummary: ActiveTaskSummary? = null,
+    queuedFollowUps: List<uniffi.codex_mobile_client.AppQueuedFollowUpPreview> = emptyList(),
+    rateLimits: uniffi.codex_mobile_client.RateLimitSnapshot? = null,
+    showCollaborationModeChip: Boolean = true,
+    onOpenCollaborationModePicker: (() -> Unit)? = null,
+    onToggleModelSelector: (() -> Unit)? = null,
+    onNavigateToSessions: (() -> Unit)? = null,
+    onShowDirectoryPicker: (() -> Unit)? = null,
+    onShowRenameDialog: ((String?) -> Unit)? = null,
+    onShowPermissionsSheet: (() -> Unit)? = null,
+    onShowExperimentalSheet: (() -> Unit)? = null,
+    onShowSkillsSheet: (() -> Unit)? = null,
+    onSlashError: ((String) -> Unit)? = null,
+    pendingUserInput: PendingUserInputRequest? = null,
+) {
+    val appModel = LocalAppModel.current
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val composerPrefillRequest by appModel.composerPrefillRequest.collectAsState()
+    var text by remember { mutableStateOf("") }
+    var attachedImage by remember { mutableStateOf<ComposerImageAttachment?>(null) }
+    var showAttachMenu by remember { mutableStateOf(false) }
+    val transcriptionManager = remember { VoiceTranscriptionManager() }
+    val isRecording by transcriptionManager.isRecording.collectAsState()
+    val isTranscribing by transcriptionManager.isTranscribing.collectAsState()
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) transcriptionManager.startRecording(context)
+    }
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        attachedImage = readAttachmentFromUri(context, uri)
+    }
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
+        bitmap ?: return@rememberLauncherForActivityResult
+        attachedImage = prepareBitmapAttachment(bitmap)
+    }
+
+    // Slash command state
+    val slashQuery by remember {
+        derivedStateOf {
+            if (text.startsWith("/")) text.removePrefix("/").lowercase() else null
+        }
+    }
+    val filteredCommands by remember {
+        derivedStateOf {
+            val q = slashQuery ?: return@derivedStateOf emptyList()
+            SLASH_COMMANDS.filter { it.name.startsWith(q) || q.isEmpty() }
+        }
+    }
+    var showSlashMenu by remember { mutableStateOf(false) }
+    LaunchedEffect(slashQuery) { showSlashMenu = slashQuery != null && filteredCommands.isNotEmpty() }
+
+    // @file search state
+    var fileSearchResults by remember { mutableStateOf<List<String>>(emptyList()) }
+    var showFileMenu by remember { mutableStateOf(false) }
+    var fileSearchJob by remember { mutableStateOf<Job?>(null) }
+    LaunchedEffect(text) {
+        val atIdx = text.lastIndexOf('@')
+        if (atIdx >= 0 && atIdx < text.length - 1 && !text.substring(atIdx).contains(' ')) {
+            val query = text.substring(atIdx + 1)
+            fileSearchJob?.cancel()
+            fileSearchJob = scope.launch {
+                delay(140) // debounce
+                try {
+                    val cwd = appModel.snapshot.value?.threads?.find { it.key == threadKey }?.info?.cwd ?: "~"
+                    val results = appModel.client.searchFiles(
+                        threadKey.serverId,
+                        AppSearchFilesRequest(query = query, roots = listOf(cwd), cancellationToken = null),
+                    )
+                    fileSearchResults = results.map { it.path }.take(8)
+                    showFileMenu = fileSearchResults.isNotEmpty()
+                } catch (_: Exception) {
+                    showFileMenu = false
+                }
+            }
+        } else {
+            showFileMenu = false
+        }
+    }
+
+    // Pending user input answers
+    var userInputAnswers by remember { mutableStateOf(mapOf<String, String>()) }
+
+    // Only consume edit-message prefill for the intended thread.
+    LaunchedEffect(composerPrefillRequest?.requestId, threadKey) {
+        val prefill = composerPrefillRequest ?: return@LaunchedEffect
+        if (prefill.threadKey != threadKey) return@LaunchedEffect
+        text = prefill.text
+        attachedImage = null
+        appModel.clearComposerPrefill(prefill.requestId)
+    }
+
+    fun dispatchSlashCommand(commandName: String, args: String?): Boolean {
+        when (commandName) {
+            "plan" -> onOpenCollaborationModePicker?.invoke()
+            "model" -> onToggleModelSelector?.invoke()
+            "new" -> onShowDirectoryPicker?.invoke()
+            "resume" -> onNavigateToSessions?.invoke()
+            "rename" -> onShowRenameDialog?.invoke(args)
+            "skills" -> onShowSkillsSheet?.invoke()
+            "permissions" -> onShowPermissionsSheet?.invoke()
+            "experimental" -> onShowExperimentalSheet?.invoke()
+            "fork" -> scope.launch {
+                try {
+                    val cwd = appModel.snapshot.value?.threads?.find { it.key == threadKey }?.info?.cwd
+                    val newKey = appModel.client.forkThread(
+                        threadKey.serverId,
+                        appModel.launchState.threadForkRequest(
+                            sourceThreadId = threadKey.threadId,
+                            cwdOverride = cwd,
+                            modelOverride = appModel.launchState.snapshot.value.selectedModel.trim().ifEmpty { null },
+                            threadKey = threadKey,
+                        ),
+                    )
+                    appModel.store.setActiveThread(newKey)
+                    appModel.refreshSnapshot()
+                } catch (e: Exception) {
+                    onSlashError?.invoke(e.message ?: "Failed to fork conversation")
+                }
+            }
+            "review" -> scope.launch {
+                try {
+                    appModel.client.startReview(
+                        threadKey.serverId,
+                        uniffi.codex_mobile_client.AppStartReviewRequest(
+                            threadId = threadKey.threadId,
+                            target = uniffi.codex_mobile_client.AppReviewTarget.UncommittedChanges,
+                            delivery = null,
+                        ),
+                    )
+                } catch (e: Exception) {
+                    onSlashError?.invoke(e.message ?: "Failed to start review")
+                }
+            }
+            else -> return false
+        }
+        return true
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(CodlinkTheme.surface)
+            .imePadding(),
+    ) {
+        if (attachedImage != null) {
+            val previewBitmap = remember(attachedImage?.data) {
+                attachedImage?.data?.let { bytes -> BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, top = 8.dp),
+            ) {
+                Box {
+                    previewBitmap?.let { bitmap ->
+                        androidx.compose.foundation.Image(
+                            bitmap = bitmap.asImageBitmap(),
+                            contentDescription = "Attached image",
+                            modifier = Modifier
+                                .size(60.dp)
+                                .clip(RoundedCornerShape(8.dp)),
+                        )
+                    }
+                    IconButton(
+                        onClick = { attachedImage = null },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .size(22.dp)
+                            .background(Color.Black.copy(alpha = 0.6f), CircleShape),
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Remove attachment",
+                            tint = Color.White,
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+            }
+        }
+
+        activePlanProgress?.let { progress ->
+            PlanProgressPanel(progress = progress)
+        }
+
+        activeTaskSummary?.let { summary ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(CodlinkTheme.codeBackground.copy(alpha = 0.72f))
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "\u2610",
+                    color = CodlinkTheme.accent,
+                    fontSize = CodlinkTextStyle.caption.scaled,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Active tasks",
+                            color = CodlinkTheme.textPrimary,
+                            fontSize = CodlinkTextStyle.caption.scaled,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            text = summary.progress,
+                            color = CodlinkTheme.accent,
+                            fontSize = CodlinkTextStyle.caption.scaled,
+                            fontWeight = FontWeight.SemiBold,
+                            fontFamily = BerkeleyMono,
+                        )
+                    }
+                    Text(
+                        text = summary.label,
+                        color = CodlinkTheme.textSecondary,
+                        fontSize = CodlinkTextStyle.caption.scaled,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+
+        // Inline pending user input prompt (above composer)
+        if (pendingUserInput != null) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(CodlinkTheme.codeBackground)
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                for (question in pendingUserInput.questions) {
+                    Text(question.question, color = CodlinkTheme.textPrimary, fontSize = CodlinkTextStyle.footnote.scaled)
+                    if (question.options.isNotEmpty()) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            for (option in question.options) {
+                                val selected = userInputAnswers[question.id] == option.label
+                                Text(
+                                    text = option.label,
+                                    color = if (selected) Color.Black else CodlinkTheme.textPrimary,
+                                    fontSize = CodlinkTextStyle.caption.scaled,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                    modifier = Modifier
+                                        .background(
+                                            if (selected) CodlinkTheme.accent else CodlinkTheme.surface,
+                                            RoundedCornerShape(12.dp),
+                                        )
+                                        .clickable { userInputAnswers = userInputAnswers + (question.id to option.label) }
+                                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                                )
+                            }
+                        }
+                    } else {
+                        var answer by remember { mutableStateOf("") }
+                        BasicTextField(
+                            value = answer,
+                            onValueChange = {
+                                answer = it
+                                userInputAnswers = userInputAnswers + (question.id to it)
+                            },
+                            textStyle = TextStyle(color = CodlinkTheme.textPrimary, fontSize = CodlinkTextStyle.footnote.scaled),
+                            cursorBrush = SolidColor(CodlinkTheme.accent),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(CodlinkTheme.surface, RoundedCornerShape(8.dp))
+                                .padding(8.dp),
+                        )
+                    }
+                }
+                Text(
+                    text = "Submit",
+                    color = Color.Black,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .background(CodlinkTheme.accent, RoundedCornerShape(8.dp))
+                        .clickable {
+                            scope.launch {
+                                val answers = pendingUserInput.questions.map { q ->
+                                    PendingUserInputAnswer(
+                                        questionId = q.id,
+                                        answers = listOfNotNull(userInputAnswers[q.id]),
+                                    )
+                                }
+                                appModel.store.respondToUserInput(pendingUserInput.id, answers)
+                                userInputAnswers = emptyMap()
+                            }
+                        }
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+            }
+        }
+
+        if (queuedFollowUps.isNotEmpty()) {
+            QueuedFollowUpsPreviewPanel(
+                previews = queuedFollowUps,
+                onSteer = { preview ->
+                    scope.launch {
+                        runCatching {
+                            appModel.store.steerQueuedFollowUp(threadKey, preview.id)
+                        }
+                    }
+                },
+                onDelete = { preview ->
+                    scope.launch {
+                        runCatching {
+                            appModel.store.deleteQueuedFollowUp(threadKey, preview.id)
+                        }
+                    }
+                },
+            )
+        }
+
+        // Input row
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (!isRecording && !isTranscribing && !isThinking) {
+                IconButton(
+                    onClick = { showAttachMenu = true },
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Icon(
+                        Icons.Default.Add,
+                        contentDescription = "Attach image",
+                        tint = CodlinkTheme.textPrimary,
+                    )
+                }
+            }
+
+            // Text field
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 36.dp, max = 120.dp)
+                    .background(CodlinkTheme.codeBackground, RoundedCornerShape(18.dp))
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(modifier = Modifier.weight(1f)) {
+                    if (text.isEmpty()) {
+                        Text(
+                            text = "Message\u2026",
+                            color = CodlinkTheme.textMuted,
+                            fontSize = CodlinkTextStyle.body.scaled,
+                        )
+                    }
+                    BasicTextField(
+                        value = text,
+                        onValueChange = { text = it },
+                        textStyle = TextStyle(
+                            color = CodlinkTheme.textPrimary,
+                            fontSize = CodlinkTextStyle.body.scaled,
+                            fontFamily = CodlinkTheme.monoFont,
+                        ),
+                        cursorBrush = SolidColor(CodlinkTheme.accent),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+
+                    // Slash command popup
+                    DropdownMenu(
+                        expanded = showSlashMenu,
+                        onDismissRequest = { showSlashMenu = false },
+                    ) {
+                        for (cmd in filteredCommands) {
+                            DropdownMenuItem(
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("/${cmd.name}", color = CodlinkTheme.accent, fontSize = CodlinkTextStyle.footnote.scaled, fontWeight = FontWeight.Medium)
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(cmd.description, color = CodlinkTheme.textMuted, fontSize = 11.sp)
+                                    }
+                                },
+                                onClick = {
+                                    showSlashMenu = false
+                                    if (dispatchSlashCommand(cmd.name, args = null)) {
+                                        text = ""
+                                        attachedImage = null
+                                    }
+                                },
+                            )
+                        }
+                    }
+
+                    // @file search popup
+                    DropdownMenu(
+                        expanded = showFileMenu,
+                        onDismissRequest = { showFileMenu = false },
+                    ) {
+                        for (path in fileSearchResults) {
+                            DropdownMenuItem(
+                                text = { Text(path, color = CodlinkTheme.textPrimary, fontSize = 12.sp, fontFamily = CodlinkTheme.monoFont) },
+                                onClick = {
+                                    showFileMenu = false
+                                    val atIdx = text.lastIndexOf('@')
+                                    if (atIdx >= 0) {
+                                        text = text.substring(0, atIdx) + "@$path "
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
+
+                val canSend = text.isNotBlank() || attachedImage != null
+                when {
+                    canSend -> {
+                        Spacer(Modifier.width(8.dp))
+                        IconButton(
+                            onClick = {
+                                parseSlashCommandInvocation(text)?.let { invocation ->
+                                    if (dispatchSlashCommand(invocation.command.name, invocation.args)) {
+                                        text = ""
+                                        attachedImage = null
+                                        return@IconButton
+                                    }
+                                }
+                                val launchState = appModel.launchState.snapshot.value
+                                val pendingModel = launchState.selectedModel.trim().ifEmpty { null }
+                                val effort = launchState.reasoningEffort.trim().ifEmpty { null }?.let(::reasoningEffortFromServerValue)
+                                val tier = if (HeaderOverrides.pendingFastMode) ServiceTier.FAST else null
+                                val attachmentToSend = attachedImage
+                                val payload = AppComposerPayload(
+                                    text = text.trim(),
+                                    additionalInputs = listOfNotNull(attachmentToSend?.toUserInput()),
+                                    approvalPolicy = appModel.launchState.approvalPolicyValue(threadKey),
+                                    sandboxPolicy = appModel.launchState.turnSandboxPolicy(threadKey),
+                                    model = pendingModel,
+                                    reasoningEffort = effort,
+                                    serviceTier = tier,
+                                )
+                                text = ""
+                                attachedImage = null
+                                scope.launch {
+                                    try {
+                                        appModel.startTurn(threadKey, payload)
+                                    } catch (e: Exception) {
+                                        text = payload.text
+                                        attachedImage = attachmentToSend
+                                    }
+                                }
+                            },
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(CodlinkTheme.accent, CircleShape),
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Send",
+                                tint = Color.Black,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                    }
+
+                    isRecording -> {
+                        Spacer(Modifier.width(8.dp))
+                        IconButton(
+                            onClick = {
+                                scope.launch {
+                                    val auth = runCatching {
+                                        appModel.client.authStatus(
+                                            threadKey.serverId,
+                                            AuthStatusRequest(
+                                                includeToken = true,
+                                                refreshToken = false,
+                                            ),
+                                        )
+                                    }.getOrNull()
+                                    val transcript = transcriptionManager.stopAndTranscribe(
+                                        authMethod = auth?.authMethod,
+                                        authToken = auth?.authToken,
+                                    )
+                                    transcript?.let { text = if (text.isBlank()) it else "$text $it" }
+                                }
+                            },
+                            modifier = Modifier.size(32.dp),
+                        ) {
+                            Icon(
+                                Icons.Default.Stop,
+                                contentDescription = "Stop recording",
+                                tint = CodlinkTheme.accentStrong,
+                            )
+                        }
+                    }
+
+                    isTranscribing -> {
+                        Spacer(Modifier.width(8.dp))
+                        LinearProgressIndicator(
+                            modifier = Modifier.width(24.dp),
+                            color = CodlinkTheme.accent,
+                            trackColor = Color.Transparent,
+                        )
+                    }
+
+                    else -> {
+                        val realtimeAvailable = remember {
+                            com.codlink.app.ui.ExperimentalFeatures.isEnabled(
+                                com.codlink.app.ui.CodlinkFeature.REALTIME_VOICE,
+                            )
+                        }
+                        val voiceController = remember { com.codlink.app.state.VoiceRuntimeController.shared }
+                        val voiceSession by voiceController.activeVoiceSession.collectAsState()
+                        val voiceSnapshot by appModel.snapshot.collectAsState()
+                        val voicePhase = voiceSnapshot?.voiceSession?.phase
+                        val voiceInputLevel = voiceSession?.inputLevel ?: 0f
+
+                        if (realtimeAvailable && text.isEmpty()) {
+                            Spacer(Modifier.width(8.dp))
+                            com.codlink.app.ui.voice.InlineVoiceButton(
+                                phase = voicePhase,
+                                inputLevel = voiceInputLevel,
+                                isAvailable = true,
+                                onStart = {
+                                    scope.launch {
+                                        voiceController.startVoiceOnThread(appModel, threadKey)
+                                    }
+                                },
+                                onStop = {
+                                    scope.launch {
+                                        voiceController.stopActiveVoiceSession(appModel)
+                                    }
+                                },
+                                modifier = Modifier.size(32.dp),
+                            )
+                        } else {
+                            Spacer(Modifier.width(8.dp))
+                            IconButton(
+                                onClick = {
+                                    if (transcriptionManager.hasMicPermission(context)) {
+                                        transcriptionManager.startRecording(context)
+                                    } else {
+                                        micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+                                    }
+                                },
+                                modifier = Modifier.size(32.dp),
+                            ) {
+                                Icon(
+                                    Icons.Default.Mic,
+                                    contentDescription = "Voice",
+                                    tint = CodlinkTheme.textSecondary,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.width(4.dp))
+
+            if (isThinking) {
+                Text(
+                    text = "Cancel",
+                    color = CodlinkTheme.textPrimary,
+                    fontSize = CodlinkTextStyle.caption.scaled,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(CodlinkTheme.surface)
+                        .clickable {
+                            val turnId = activeTurnId ?: return@clickable
+                            scope.launch {
+                                try {
+                                    appModel.client.interruptTurn(
+                                        threadKey.serverId,
+                                        AppInterruptTurnRequest(threadId = threadKey.threadId, turnId = turnId),
+                                    )
+                                } catch (_: Exception) {}
+                            }
+                        }
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                )
+            }
+        }
+
+        val hasIndicators = contextPercent != null || rateLimits?.primary != null || rateLimits?.secondary != null
+        if (hasIndicators) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 52.dp, bottom = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                rateLimits?.primary?.let { window ->
+                    RateLimitBadge(window)
+                }
+                rateLimits?.secondary?.let { window ->
+                    RateLimitBadge(window)
+                }
+                contextPercent?.let {
+                    ContextBadge(it)
+                }
+            }
+        }
+    }
+
+    if (showAttachMenu) {
+        val clipboardManager = remember { context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager }
+        val clipboardHasImage = remember(showAttachMenu) {
+            val clip = clipboardManager.primaryClip ?: return@remember false
+            if (clip.itemCount == 0) return@remember false
+            val desc = clip.description
+            for (i in 0 until desc.mimeTypeCount) {
+                if (desc.getMimeType(i).startsWith("image/")) return@remember true
+            }
+            clip.getItemAt(0)?.uri?.let { uri ->
+                context.contentResolver.getType(uri)?.startsWith("image/") == true
+            } ?: false
+        }
+
+        ModalBottomSheet(
+            onDismissRequest = { showAttachMenu = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = CodlinkTheme.background,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = "Attach",
+                    color = CodlinkTheme.textPrimary,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+
+                if (clipboardHasImage) {
+                    AttachmentActionRow(
+                        title = "Paste Image",
+                        onClick = {
+                            showAttachMenu = false
+                            val clip = clipboardManager.primaryClip
+                            val uri = clip?.getItemAt(0)?.uri
+                            if (uri != null) {
+                                attachedImage = readAttachmentFromUri(context, uri)
+                            }
+                        },
+                    )
+                }
+
+                AttachmentActionRow(
+                    title = "Photo Library",
+                    onClick = {
+                        showAttachMenu = false
+                        photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    },
+                )
+
+                AttachmentActionRow(
+                    title = "Take Photo",
+                    onClick = {
+                        showAttachMenu = false
+                        cameraLauncher.launch(null)
+                    },
+                )
+            }
+        }
+    }
+}
+
+private data class QueuedFollowUpUiStyle(
+    val title: String,
+    val tint: Color,
+    val background: Color,
+    val border: Color,
+)
+
+@Composable
+private fun QueuedFollowUpsPreviewPanel(
+    previews: List<AppQueuedFollowUpPreview>,
+    onSteer: (AppQueuedFollowUpPreview) -> Unit,
+    onDelete: (AppQueuedFollowUpPreview) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp)
+            .background(CodlinkTheme.codeBackground, RoundedCornerShape(14.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Default.Schedule,
+                contentDescription = null,
+                tint = CodlinkTheme.accent,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = "Queued Next",
+                color = CodlinkTheme.textPrimary,
+                fontSize = CodlinkTextStyle.caption.scaled,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = previews.size.toString(),
+                color = CodlinkTheme.textSecondary,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .background(CodlinkTheme.surface.copy(alpha = 0.9f), RoundedCornerShape(999.dp))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+        }
+
+        previews.forEach { preview ->
+            QueuedFollowUpCard(
+                preview = preview,
+                onSteer = onSteer,
+                onDelete = onDelete,
+            )
+        }
+    }
+}
+
+@Composable
+private fun QueuedFollowUpCard(
+    preview: AppQueuedFollowUpPreview,
+    onSteer: (AppQueuedFollowUpPreview) -> Unit,
+    onDelete: (AppQueuedFollowUpPreview) -> Unit,
+) {
+    val style = queuedFollowUpUiStyle(preview.kind)
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, style.border, RoundedCornerShape(12.dp))
+            .background(style.background, RoundedCornerShape(12.dp))
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier
+                    .background(style.tint.copy(alpha = 0.14f), RoundedCornerShape(999.dp))
+                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .background(style.tint, CircleShape),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = style.title,
+                    color = style.tint,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+
+            Text(
+                text = preview.text,
+                color = CodlinkTheme.textSecondary,
+                fontSize = CodlinkTextStyle.caption.scaled,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+
+        if (preview.kind == AppQueuedFollowUpKind.MESSAGE) {
+            Text(
+                text = "\u21b3 Steer",
+                color = CodlinkTheme.textPrimary,
+                fontSize = CodlinkTextStyle.caption.scaled,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .background(CodlinkTheme.surface.copy(alpha = 0.96f), RoundedCornerShape(999.dp))
+                    .clickable { onSteer(preview) }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            )
+        }
+
+        IconButton(
+            onClick = { onDelete(preview) },
+            modifier = Modifier.size(30.dp),
+        ) {
+            Icon(
+                Icons.Default.Close,
+                contentDescription = "Delete queued follow-up",
+                tint = CodlinkTheme.textSecondary,
+                modifier = Modifier.size(14.dp),
+            )
+        }
+    }
+}
+
+private fun queuedFollowUpUiStyle(kind: AppQueuedFollowUpKind): QueuedFollowUpUiStyle =
+    when (kind) {
+        AppQueuedFollowUpKind.MESSAGE ->
+            QueuedFollowUpUiStyle(
+                title = "Queued message",
+                tint = CodlinkTheme.accent,
+                background = CodlinkTheme.accent.copy(alpha = 0.08f),
+                border = CodlinkTheme.accent.copy(alpha = 0.24f),
+            )
+
+        AppQueuedFollowUpKind.PENDING_STEER ->
+            QueuedFollowUpUiStyle(
+                title = "Steer queued",
+                tint = CodlinkTheme.accentStrong,
+                background = CodlinkTheme.accentStrong.copy(alpha = 0.10f),
+                border = CodlinkTheme.accentStrong.copy(alpha = 0.28f),
+            )
+
+        AppQueuedFollowUpKind.RETRYING_STEER ->
+            QueuedFollowUpUiStyle(
+                title = "Retrying steer",
+                tint = CodlinkTheme.warning,
+                background = CodlinkTheme.warning.copy(alpha = 0.10f),
+                border = CodlinkTheme.warning.copy(alpha = 0.28f),
+            )
+    }
+
+private fun reasoningEffortFromServerValue(value: String): ReasoningEffort? =
+    when (value.trim().lowercase()) {
+        "none" -> ReasoningEffort.NONE
+        "minimal" -> ReasoningEffort.MINIMAL
+        "low" -> ReasoningEffort.LOW
+        "medium" -> ReasoningEffort.MEDIUM
+        "high" -> ReasoningEffort.HIGH
+        "xhigh" -> ReasoningEffort.X_HIGH
+        else -> null
+    }
+
+@Composable
+internal fun CollaborationModeChip(
+    mode: uniffi.codex_mobile_client.AppModeKind,
+    onClick: () -> Unit,
+) {
+    val label = when (mode) {
+        uniffi.codex_mobile_client.AppModeKind.PLAN -> "Plan"
+        uniffi.codex_mobile_client.AppModeKind.DEFAULT -> "Default"
+    }
+    val container = if (mode == uniffi.codex_mobile_client.AppModeKind.PLAN) {
+        CodlinkTheme.accent
+    } else {
+        CodlinkTheme.surfaceLight
+    }
+    val contentColor = if (mode == uniffi.codex_mobile_client.AppModeKind.PLAN) {
+        Color.Black
+    } else {
+        CodlinkTheme.textPrimary
+    }
+
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(container)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            color = contentColor,
+            fontSize = CodlinkTextStyle.caption.scaled,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Icon(
+            Icons.Default.KeyboardArrowDown,
+            contentDescription = "Open collaboration mode picker",
+            tint = contentColor,
+            modifier = Modifier.size(14.dp),
+        )
+    }
+}
+
+@Composable
+private fun PlanProgressPanel(
+    progress: uniffi.codex_mobile_client.AppPlanProgressSnapshot,
+) {
+    val completed = remember(progress.plan) {
+        progress.plan.count { it.status == uniffi.codex_mobile_client.AppPlanStepStatus.COMPLETED }
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(CodlinkTheme.codeBackground.copy(alpha = 0.82f))
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Plan Progress",
+                color = CodlinkTheme.textPrimary,
+                fontSize = CodlinkTextStyle.caption.scaled,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "$completed/${progress.plan.size}",
+                color = CodlinkTheme.accent,
+                fontSize = CodlinkTextStyle.caption.scaled,
+                fontWeight = FontWeight.SemiBold,
+                fontFamily = BerkeleyMono,
+            )
+        }
+        progress.explanation?.takeIf { it.isNotBlank() }?.let { explanation ->
+            Text(
+                text = explanation,
+                color = CodlinkTheme.textSecondary,
+                fontSize = CodlinkTextStyle.caption.scaled,
+            )
+        }
+        progress.plan.forEachIndexed { index, step ->
+            val icon = when (step.status) {
+                uniffi.codex_mobile_client.AppPlanStepStatus.COMPLETED -> "✓"
+                uniffi.codex_mobile_client.AppPlanStepStatus.IN_PROGRESS -> "●"
+                uniffi.codex_mobile_client.AppPlanStepStatus.PENDING -> "○"
+            }
+            val tint = when (step.status) {
+                uniffi.codex_mobile_client.AppPlanStepStatus.COMPLETED -> CodlinkTheme.success
+                uniffi.codex_mobile_client.AppPlanStepStatus.IN_PROGRESS -> CodlinkTheme.warning
+                uniffi.codex_mobile_client.AppPlanStepStatus.PENDING -> CodlinkTheme.textMuted
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Text(
+                    text = icon,
+                    color = tint,
+                    fontSize = CodlinkTextStyle.caption.scaled,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = "${index + 1}.",
+                    color = CodlinkTheme.textMuted,
+                    fontSize = CodlinkTextStyle.caption.scaled,
+                    fontWeight = FontWeight.SemiBold,
+                    fontFamily = BerkeleyMono,
+                )
+                Text(
+                    text = step.step,
+                    color = CodlinkTheme.textPrimary,
+                    fontSize = CodlinkTextStyle.caption.scaled,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttachmentActionRow(
+    title: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(CodlinkTheme.surface, RoundedCornerShape(18.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(title, color = CodlinkTheme.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
+private fun readAttachmentFromUri(context: android.content.Context, uri: Uri): ComposerImageAttachment? {
+    val resolver = context.contentResolver
+    val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
+    val mimeType = resolver.getType(uri).orEmpty()
+    return prepareImageAttachment(bytes, mimeType)
+}
+
+private fun prepareBitmapAttachment(bitmap: Bitmap): ComposerImageAttachment? {
+    val output = ByteArrayOutputStream()
+    val format = if (bitmap.hasAlpha()) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
+    val mimeType = if (bitmap.hasAlpha()) "image/png" else "image/jpeg"
+    val quality = if (bitmap.hasAlpha()) 100 else 85
+    if (!bitmap.compress(format, quality, output)) return null
+    return ComposerImageAttachment(output.toByteArray(), mimeType)
+}
+
+private fun prepareImageAttachment(bytes: ByteArray, mimeTypeHint: String): ComposerImageAttachment? {
+    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+    val inferredMime = mimeTypeHint.lowercase()
+    if (inferredMime == "image/png" && bitmap.hasAlpha()) {
+        return ComposerImageAttachment(bytes, "image/png")
+    }
+    return prepareBitmapAttachment(bitmap)
+}
+
+internal fun parseSlashCommandInvocation(text: String): SlashInvocation? {
+    val firstLine = text.lineSequence().firstOrNull()?.trim().orEmpty()
+    if (!firstLine.startsWith("/")) return null
+    val commandText = firstLine.drop(1).trim()
+    if (commandText.isEmpty()) return null
+    val parts = commandText.split(Regex("\\s+"), limit = 2)
+    val command = SLASH_COMMANDS.firstOrNull { it.name == parts.first().lowercase() } ?: return null
+    val args = parts.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }
+    return SlashInvocation(command = command, args = args)
+}
+
+// ── Rate Limit Badge (matching iOS RateLimitBadgeView) ───────────────────────
+
+@Composable
+private fun RateLimitBadge(window: uniffi.codex_mobile_client.RateLimitWindow) {
+    val remaining = (100 - window.usedPercent.toInt()).coerceIn(0, 100)
+    val label = window.windowDurationMins?.let { mins ->
+        when {
+            mins >= 1440 -> "${mins / 1440}d"
+            mins >= 60 -> "${mins / 60}h"
+            else -> "${mins}m"
+        }
+    } ?: "?"
+    val tint = when {
+        remaining <= 10 -> CodlinkTheme.danger
+        remaining <= 30 -> CodlinkTheme.warning
+        else -> CodlinkTheme.textMuted
+    }
+
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            color = CodlinkTheme.textSecondary,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            fontFamily = CodlinkTheme.monoFont,
+        )
+        ContextBadge(percent = remaining, tint = tint)
+    }
+}
+
+// ── Context Badge (matching iOS ContextBadgeView) ────────────────────────────
+
+@Composable
+private fun ContextBadge(
+    percent: Int,
+    tint: Color = when {
+        percent <= 15 -> CodlinkTheme.danger
+        percent <= 35 -> CodlinkTheme.warning
+        else -> CodlinkTheme.success
+    },
+) {
+    val normalizedPercent = percent.coerceIn(0, 100)
+
+    Box(
+        modifier = Modifier
+            .size(width = 35.dp, height = 16.dp)
+            .background(Color.Transparent, RoundedCornerShape(4.dp))
+            .border(1.2.dp, tint.copy(alpha = 0.5f), RoundedCornerShape(4.dp)),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        // Fill bar
+        Box(
+            modifier = Modifier
+                .fillMaxHeight()
+                .fillMaxWidth(fraction = normalizedPercent / 100f)
+                .background(tint.copy(alpha = 0.25f), RoundedCornerShape(4.dp)),
+        )
+        // Number overlay
+        Text(
+            text = "$normalizedPercent",
+            color = tint,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.ExtraBold,
+            fontFamily = CodlinkTheme.monoFont,
+            modifier = Modifier.align(Alignment.Center),
+        )
+    }
+}

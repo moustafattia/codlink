@@ -6,11 +6,10 @@ This matrix covers transport reliability and startup-path parity for Android web
 
 ## Automated Regression Scaffolding
 
-Run unit tests for both runtime flavors:
+Run unit tests:
 
 ```bash
-./gradlew :app:testOnDeviceDebugUnitTest
-./gradlew :app:testRemoteOnlyDebugUnitTest
+./gradlew :app:testDebugUnitTest
 ```
 
 Current automated checks:
@@ -27,24 +26,24 @@ Current automated checks:
 
 ## Manual Matrix
 
-| Area | onDevice flavor | remoteOnly flavor |
-|---|---|---|
-| App launch | App launches and can start local bridge-backed session | App launches and does not auto-start local bridge |
-| Connect local/on-device | Success (`ServerConfig.local`) | Expected failure with clear "disabled" error |
-| Connect remote server | Success | Success |
-| SSH-discovered remote server | Prompts for SSH credentials, connects through SSH port forwarding, and never attempts `ws://host:22` directly | Same |
-| Local transport drop | Reconnect and one-time reinitialize before next non-initialize RPC | N/A (local startup disabled) |
-| Remote transport drop | Reconnect behavior via Rust `AppStore` updates and resumed RPC notifications | Same |
-| Thread start/resume fallback sandbox | `workspace-write` with `danger-full-access` fallback when linux sandbox missing | Same |
+| Area | Expected |
+|---|---|
+| App launch | App launches and can start a local bridge-backed session |
+| Connect local/on-device | Success (`ServerConfig.local`) |
+| Connect remote server | Success |
+| SSH-discovered remote server | Prompts for SSH credentials, connects through SSH port forwarding, and never attempts `ws://host:22` directly |
+| Local transport drop | Reconnect and one-time reinitialize before next non-initialize RPC |
+| Remote transport drop | Reconnect via Rust `AppStore` updates and resumed RPC notifications |
+| Thread start/resume fallback sandbox | `workspace-write` with `danger-full-access` fallback when linux sandbox missing |
 
 ## Suggested Smoke Steps
 
-1. `onDeviceDebug`: connect local default server, start thread, send turn, toggle network off/on, send another turn.
-2. `onDeviceDebug`: kill local bridge process (or force stop app), relaunch, confirm initialize and thread list recover.
-3. `remoteOnlyDebug`: attempt local connect path, verify explicit disabled error; connect remote server and run thread/list + turn/start.
-4. Both flavors: verify account read/login status refresh still updates UI after reconnect.
+1. Connect local default server, start thread, send turn, toggle network off/on, send another turn.
+2. Kill local bridge process (or force stop app), relaunch, confirm initialize and thread list recover.
+3. Attempt local connect path with the on-device bridge disabled, verify explicit disabled error; connect remote server and run `thread/list` + `turn/start`.
+4. Verify account read/login status refresh still updates UI after reconnect.
 
-## Sidebar + Picker Parity Checklist (iOS + Android)
+## Sidebar + Picker Checklist
 
 ### Session Sidebar
 
@@ -66,16 +65,14 @@ Current automated checks:
 - Bottom CTA is sticky and mirrors path state: `Select <path>` (or disabled helper text).
 - Error state exposes both `Retry` and `Change server`.
 - `Clear recent directories` requires destructive confirmation.
-- Back behavior parity:
-  - Android: `Back` navigates up before dismissing sheet.
-- iOS: dismiss is blocked while not at root; cancel navigates up first.
+- Back behavior: `Back` navigates up before dismissing the sheet.
 
 ### Appearance
 
 - Chat wallpaper can be chosen from the photo library, persists across relaunch, and can be removed from Settings.
 - Conversation screen and appearance preview both render the selected wallpaper instead of the fallback theme gradient.
 
-## Tool Call Card Parity Matrix (iOS + Android)
+## Tool Call Card Matrix
 
 Renderer contract for this release:
 
@@ -96,7 +93,7 @@ Renderer contract for this release:
 | Collaboration | `Tool:` value fallback | normalized from `Status:` | Metadata, Prompt text, Targets list |
 | Image View | basename from `Path:` | usually `unknown` | Metadata (`Path`) |
 
-Status normalization parity:
+Status normalization:
 
 - `inProgress`, `in progress`, `running`, `pending`, `started` -> in progress (amber)
 - `completed`, `complete`, `success`, `ok`, `done` -> completed (green)
