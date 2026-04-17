@@ -11,7 +11,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$SCRIPT_DIR"
-source "$WORKSPACE_DIR/../../tools/scripts/load-sccache-aws-creds.sh"
 OUT_KOTLIN="$WORKSPACE_DIR/generated/kotlin"
 
 cd "$WORKSPACE_DIR"
