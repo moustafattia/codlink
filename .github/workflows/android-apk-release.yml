@@ -79,6 +79,7 @@ jobs:
       - name: Build Rust JNI libs
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/30.0.14904198
+          CARGO_BUILD_JOBS: "2"
         run: |
           mkdir -p .build-stamps
           touch .build-stamps/sync .build-stamps/bindings-kotlin
