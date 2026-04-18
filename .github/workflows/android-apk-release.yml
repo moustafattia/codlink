@@ -83,7 +83,7 @@ jobs:
         run: |
           mkdir -p .build-stamps
           touch .build-stamps/sync .build-stamps/bindings-kotlin
-          ANDROID_ABIS="arm64-v8a,x86_64" ANDROID_RUST_PROFILE="release" ./tools/scripts/build-android-rust.sh
+          ANDROID_ABIS="arm64-v8a,x86_64" ANDROID_RUST_PROFILE="mobile-release" ./tools/scripts/build-android-rust.sh
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
