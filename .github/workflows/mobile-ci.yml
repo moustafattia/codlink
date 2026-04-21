@@ -10,6 +10,7 @@ on:
       - 'shared/rust-bridge/**'
       - 'shared/third_party/codex/**'
       - 'tools/scripts/**'
+      - '.github/workflows/android-apk-release.yml'
       - '.github/workflows/mobile-ci.yml'
   push:
     branches: [ main ]
@@ -21,6 +22,7 @@ on:
       - 'shared/rust-bridge/**'
       - 'shared/third_party/codex/**'
       - 'tools/scripts/**'
+      - '.github/workflows/android-apk-release.yml'
       - '.github/workflows/mobile-ci.yml'
 
 concurrency:
