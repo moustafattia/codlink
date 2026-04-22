@@ -508,7 +508,7 @@ impl AppClient {
         params: types::AppSearchFilesRequest,
     ) -> Result<Vec<types::FileSearchResult>, ClientError> {
         blocking_async!(self.rt, self.inner, |c| {
-            let response: upstream::FuzzyFileSearchResponse = rpc(
+            let response: WireFuzzyFileSearchResponse = rpc(
                 c.as_ref(),
                 &server_id,
                 req!(server_id, FuzzyFileSearch, params.into()),
@@ -573,6 +573,55 @@ impl AppClient {
         })
     }
 
+    /// Fetch ambient suggestions for a (server_id, project_root) pair.
+    ///
+    /// Returns `None` if the suggestions file does not exist on the remote.
+    /// Results are cached in memory for 60 seconds per (server_id, project_root).
+    pub async fn ambient_suggestions(
+        &self,
+        server_id: String,
+        project_root: String,
+    ) -> Result<Option<crate::ambient_suggestions::AmbientSuggestionsSnapshot>, ClientError> {
+        blocking_async!(self.rt, self.inner, |c| {
+            use crate::ambient_suggestions::{
+                WireSnapshot, ambient_bucket, build_snapshot_from_wire, cache_insert, cache_lookup,
+            };
+
+            if let Some(cached) = cache_lookup(&c.ambient_cache, &server_id, &project_root) {
+                return Ok(Some(cached));
+            }
+
+            let bucket = ambient_bucket(&project_root);
+            // TODO windows: no Windows fallback in this pass
+            let cmd = format!(
+                "cat \"$HOME/.codex/ambient-suggestions/{bucket}/ambient-suggestions.json\" 2>/dev/null"
+            );
+            let resp = exec_command_simple(
+                c.as_ref(),
+                &server_id,
+                &["/bin/sh", "-lc", &cmd],
+                Some(&project_root),
+            )
+            .await?;
+
+            if resp.exit_code != 0 {
+                return Ok(None);
+            }
+            let stdout = resp.stdout.trim().to_string();
+            if stdout.is_empty() {
+                return Ok(None);
+            }
+
+            let wire: WireSnapshot = serde_json::from_str(&stdout).map_err(|e| {
+                ClientError::Serialization(format!("ambient-suggestions parse error: {e}"))
+            })?;
+            let snapshot = build_snapshot_from_wire(wire)?;
+
+            cache_insert(&c.ambient_cache, &server_id, &project_root, snapshot.clone());
+            Ok(Some(snapshot))
+        })
+    }
+
     /// List subdirectories in a remote directory.
     ///
     /// Auto-detects Windows vs POSIX from the path format and runs the
@@ -619,10 +668,57 @@ impl AppClient {
             })
         })
     }
+
+    /// Create a directory on a remote server. Creates intermediate parents
+    /// as needed. No-op (returns Ok) if the directory already exists.
+    pub async fn create_remote_directory(
+        &self,
+        server_id: String,
+        path: String,
+    ) -> Result<(), ClientError> {
+        blocking_async!(self.rt, self.inner, |c| {
+            let normalized = path.trim().to_string();
+            if normalized.is_empty() {
+                return Err(ClientError::Rpc("path is empty".to_string()));
+            }
+            let rp = crate::remote_path::RemotePath::parse(&normalized);
+            let is_windows = rp.is_windows();
+
+            // `mkdir -p` on POSIX is idempotent. On Windows we fall back to
+            // PowerShell `New-Item -Force` which mirrors that behavior and
+            // handles intermediate parents.
+            let command: Vec<&str> = if is_windows {
+                vec![
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "New-Item",
+                    "-ItemType",
+                    "Directory",
+                    "-Force",
+                    "-Path",
+                    &normalized,
+                ]
+            } else {
+                vec!["/bin/mkdir", "-p", &normalized]
+            };
+
+            let resp = exec_command_simple(c.as_ref(), &server_id, &command, None).await?;
+            if resp.exit_code != 0 {
+                let msg = resp.stderr.trim();
+                return Err(ClientError::Rpc(if msg.is_empty() {
+                    format!("mkdir failed with exit code {}", resp.exit_code)
+                } else {
+                    msg.to_string()
+                }));
+            }
+            Ok(())
+        })
+    }
 }
 
 /// Execute a simple one-shot command on a remote server.
-async fn exec_command_simple(
+pub(crate) async fn exec_command_simple(
     client: &MobileClient,
     server_id: &str,
     command: &[&str],
@@ -649,6 +745,47 @@ async fn exec_command_simple(
         req!(server_id, OneOffCommandExec, params),
     )
     .await
+}
+
+/// Tolerant wire-compat mirror of `upstream::FuzzyFileSearchResponse`.
+///
+/// `match_type` was added upstream in March 2026 (commit 10eb3ec7f, "Simple
+/// directory mentions"). Older `codex` server binaries omit it, which would
+/// cause strict deserialization against `upstream::FuzzyFileSearchResponse`
+/// to fail for the entire response. Default to `File` when absent.
+#[derive(serde::Deserialize)]
+struct WireFuzzyFileSearchResponse {
+    #[serde(default)]
+    files: Vec<WireFuzzyFileSearchResult>,
+}
+
+#[derive(serde::Deserialize)]
+struct WireFuzzyFileSearchResult {
+    root: String,
+    path: String,
+    #[serde(default = "default_match_type")]
+    match_type: upstream::FuzzyFileSearchMatchType,
+    file_name: String,
+    score: u32,
+    #[serde(default)]
+    indices: Option<Vec<u32>>,
+}
+
+fn default_match_type() -> upstream::FuzzyFileSearchMatchType {
+    upstream::FuzzyFileSearchMatchType::File
+}
+
+impl From<WireFuzzyFileSearchResult> for types::FileSearchResult {
+    fn from(value: WireFuzzyFileSearchResult) -> Self {
+        Self {
+            root: value.root,
+            path: value.path,
+            match_type: value.match_type.into(),
+            file_name: value.file_name,
+            score: value.score,
+            indices: value.indices,
+        }
+    }
 }
 
 async fn resolve_image_view_bytes(

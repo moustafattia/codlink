@@ -63,6 +63,7 @@ fn format_broadcast(tb: &TypedBroadcast) -> String {
 }
 
 /// Connect at the raw frame level and print every envelope as JSON.
+#[cfg(unix)]
 async fn run_raw(socket_path: PathBuf) {
     use codex_ipc::protocol::method::Method;
     use codex_ipc::transport::{frame, socket};
@@ -122,6 +123,16 @@ async fn run_raw(socket_path: PathBuf) {
             }
         }
     }
+}
+
+/// Raw frame mode is only available where the IPC transport exists.
+#[cfg(not(unix))]
+async fn run_raw(socket_path: PathBuf) {
+    eprintln!(
+        "raw IPC listen is unsupported on this platform ({})",
+        socket_path.display()
+    );
+    std::process::exit(1);
 }
 
 /// Connect via IpcClient and print typed broadcast summaries.

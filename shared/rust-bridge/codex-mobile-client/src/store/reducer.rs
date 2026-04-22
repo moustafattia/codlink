@@ -5,7 +5,10 @@ use std::sync::RwLock;
 use codex_app_server_protocol as upstream;
 use tokio::sync::broadcast;
 
-use crate::conversation::{make_error_item, make_model_rerouted_item, make_turn_diff_item};
+use crate::conversation::{
+    command_output_is_truncated, make_error_item, make_model_rerouted_item, make_turn_diff_item,
+    truncate_command_output_text,
+};
 use crate::conversation_uniffi::{
     HydratedAssistantMessageData, HydratedCommandExecutionData, HydratedConversationItem,
     HydratedConversationItemContent, HydratedMcpToolCallData, HydratedProposedPlanData,
@@ -28,7 +31,8 @@ use super::actions::{
     thread_info_from_upstream_status_change,
 };
 use super::boundary::{
-    current_agent_directory_version, project_thread_state_update, project_thread_update,
+    AppSessionSummary, app_session_summary, current_agent_directory_version, empty_session_summary,
+    project_hydrated_item, project_thread_state_update, project_thread_update,
 };
 use super::snapshot::{
     AppConnectionProgressSnapshot, AppLifecyclePhaseSnapshot, AppQueuedFollowUpPreview,
@@ -234,7 +238,6 @@ impl AppStoreReducer {
         let mut active_thread_cleared = false;
         let mut pending_approvals = None;
         let mut pending_user_inputs = None;
-        let mut voice_session_changed = false;
         let agent_directory_version;
         {
             let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
@@ -258,6 +261,14 @@ impl AppStoreReducer {
                     preserve_thread_title(&entry.info, &mut next_info);
                     preserve_thread_preview(&entry.info, &mut next_info);
                     preserve_thread_created_at(&entry.info, &mut next_info);
+                    // thread/list carries no turn data, so it cannot authoritatively
+                    // close an in-flight turn. Only TurnCompleted (or a rebuild that
+                    // includes the turn list) can downgrade Active → Idle.
+                    if matches!(next_info.status, ThreadSummaryStatus::Idle)
+                        && entry.active_turn_id.is_some()
+                    {
+                        next_info.status = entry.info.status.clone();
+                    }
                     let next_model = next_info.model.clone().or_else(|| entry.model.clone());
                     let info_changed = entry.info != next_info;
                     let model_changed = entry.model != next_model;
@@ -318,17 +329,11 @@ impl AppStoreReducer {
             if snapshot.pending_user_inputs.len() != pending_user_inputs_before {
                 pending_user_inputs = Some(snapshot.pending_user_inputs.clone());
             }
-            if snapshot
-                .voice_session
-                .active_thread
-                .as_ref()
-                .is_some_and(|key| {
-                    key.server_id == server_id && !incoming_ids.contains(&key.thread_id)
-                })
-            {
-                snapshot.voice_session = AppVoiceSessionSnapshot::default();
-                voice_session_changed = true;
-            }
+            // See `finalize_thread_list_sync`: we do NOT tear down an
+            // active voice session just because the thread/list page
+            // happens to omit the voice thread. The thread may simply
+            // be too new, or the page may be filtered. Let
+            // RealtimeStarted/RealtimeClosed drive voice_session state.
             agent_directory_version = current_agent_directory_version(&snapshot);
         }
         for key in removed_thread_keys {
@@ -350,9 +355,6 @@ impl AppStoreReducer {
         if let Some(requests) = pending_user_inputs {
             self.emit(AppStoreUpdateRecord::PendingUserInputsChanged { requests });
         }
-        if voice_session_changed {
-            self.emit(AppStoreUpdateRecord::VoiceSessionChanged);
-        }
         if active_thread_cleared {
             self.emit(AppStoreUpdateRecord::ActiveThreadChanged { key: None });
         }
@@ -369,7 +371,6 @@ impl AppStoreReducer {
         let mut active_thread_cleared = false;
         let mut pending_approvals = None;
         let mut pending_user_inputs = None;
-        let mut voice_session_changed = false;
         let agent_directory_version;
         {
             let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
@@ -427,17 +428,15 @@ impl AppStoreReducer {
             if snapshot.pending_user_inputs.len() != pending_user_inputs_before {
                 pending_user_inputs = Some(snapshot.pending_user_inputs.clone());
             }
-            if snapshot
-                .voice_session
-                .active_thread
-                .as_ref()
-                .is_some_and(|key| {
-                    key.server_id == server_id && !incoming_ids.contains(&key.thread_id)
-                })
-            {
-                snapshot.voice_session = AppVoiceSessionSnapshot::default();
-                voice_session_changed = true;
-            }
+            // Intentionally do NOT clear voice_session here based on
+            // list-sync output. A list_threads RPC may omit a brand-new
+            // voice thread (e.g. the one realtime voice is running on
+            // right now was created seconds ago and isn't materialized
+            // in the listing yet). When the assistant itself calls the
+            // `list_sessions` tool mid-conversation, clearing
+            // voice_session here would tear down the live call. The
+            // authoritative lifecycle signal is RealtimeStarted /
+            // RealtimeClosed.
             agent_directory_version = current_agent_directory_version(&snapshot);
         }
         for key in removed_thread_keys {
@@ -451,9 +450,6 @@ impl AppStoreReducer {
         }
         if let Some(requests) = pending_user_inputs {
             self.emit(AppStoreUpdateRecord::PendingUserInputsChanged { requests });
-        }
-        if voice_session_changed {
-            self.emit(AppStoreUpdateRecord::VoiceSessionChanged);
         }
         if active_thread_cleared {
             self.emit(AppStoreUpdateRecord::ActiveThreadChanged { key: None });
@@ -1882,7 +1878,16 @@ impl AppStoreReducer {
             if info.updated_at.is_some() {
                 thread.info.updated_at = info.updated_at;
             }
-            thread.info.status = info.status;
+            // ThreadStatusChanged is metadata-only; it cannot close an in-flight
+            // turn. Only TurnCompleted (or a rebuild with the turn list) is
+            // allowed to downgrade Active → Idle.
+            thread.info.status = if matches!(info.status, ThreadSummaryStatus::Idle)
+                && thread.active_turn_id.is_some()
+            {
+                thread.info.status.clone()
+            } else {
+                info.status
+            };
             mutate(thread);
             inserted
         };
@@ -2028,6 +2033,10 @@ impl AppStoreReducer {
     }
 
     pub(crate) fn emit_thread_item_changed(&self, key: &ThreadKey, item: HydratedConversationItem) {
+        let item = {
+            let snapshot = self.snapshot.read().expect("app store lock poisoned");
+            project_hydrated_item(&snapshot, &key.server_id, &item)
+        };
         let cache_key = (key.clone(), item.id.clone());
         {
             let mut cache = self
@@ -2039,10 +2048,27 @@ impl AppStoreReducer {
             }
             cache.insert(cache_key, item.clone());
         }
+        let session_summary = self.compute_session_summary(key);
         self.emit(AppStoreUpdateRecord::ThreadItemChanged {
             key: key.clone(),
             item: HydratedConversationItem::from(item),
+            session_summary,
         });
+    }
+
+    /// Snapshot a single thread's `AppSessionSummary` for piggybacking on
+    /// per-item events. Falls back to a minimal summary if the thread is
+    /// gone by the time this runs (shouldn't happen in practice — emit
+    /// sites hold the snapshot lock while deciding to emit).
+    fn compute_session_summary(&self, key: &ThreadKey) -> AppSessionSummary {
+        let snapshot = self.snapshot.read().expect("app store lock poisoned");
+        let Some(thread) = snapshot.threads.get(key) else {
+            // Placeholder empty summary — the matching thread has been
+            // removed between the mutation and this read. Platform side
+            // will get a ThreadRemoved event next and discard anyway.
+            return empty_session_summary(key.clone());
+        };
+        app_session_summary(thread, snapshot.servers.get(&key.server_id))
     }
 
     pub(crate) fn emit_thread_item_changed_by_id(&self, key: &ThreadKey, item_id: &str) {
@@ -2113,9 +2139,11 @@ impl AppStoreReducer {
                     if queued_changed {
                         self.emit_thread_metadata_changed(key);
                     }
+                    let session_summary = self.compute_session_summary(key);
                     self.emit(AppStoreUpdateRecord::ThreadItemChanged {
                         key: key.clone(),
                         item,
+                        session_summary,
                     });
                 }
             }
@@ -2187,7 +2215,7 @@ impl AppStoreReducer {
                     "emit ThreadMetadataChanged"
                 )
             }
-            AppStoreUpdateRecord::ThreadItemChanged { key, item } => {
+            AppStoreUpdateRecord::ThreadItemChanged { key, item, .. } => {
                 tracing::debug!(
                     target: "store",
                     server_id = key.server_id,
@@ -2406,10 +2434,13 @@ fn append_command_output_delta(
             let item = &mut thread.items[index];
             match &mut item.content {
                 HydratedConversationItemContent::CommandExecution(command) => {
-                    command
-                        .output
-                        .get_or_insert_with(String::new)
-                        .push_str(delta);
+                    let output = command.output.get_or_insert_with(String::new);
+                    if !command_output_is_truncated(output) {
+                        output.push_str(delta);
+                        if output.len() > 128 * 1024 {
+                            *output = truncate_command_output_text(output);
+                        }
+                    }
                     LiveDeltaApplyResult::Streamed
                 }
                 _ => {
@@ -2418,7 +2449,7 @@ fn append_command_output_delta(
                             command: String::new(),
                             cwd: String::new(),
                             status: AppOperationStatus::InProgress,
-                            output: Some(delta.to_string()),
+                            output: Some(truncate_command_output_text(delta)),
                             exit_code: None,
                             duration_ms: None,
                             process_id: None,
@@ -2440,7 +2471,7 @@ fn append_command_output_delta(
                         command: String::new(),
                         cwd: String::new(),
                         status: AppOperationStatus::InProgress,
-                        output: Some(delta.to_string()),
+                        output: Some(truncate_command_output_text(delta)),
                         exit_code: None,
                         duration_ms: None,
                         process_id: None,
@@ -2489,6 +2520,7 @@ fn append_mcp_progress(
                             } else {
                                 vec![message.to_string()]
                             },
+                            computer_use: None,
                         });
                     if item.source_turn_id.is_none() {
                         item.source_turn_id = thread.active_turn_id.clone();
@@ -2515,6 +2547,7 @@ fn append_mcp_progress(
                     } else {
                         vec![message.to_string()]
                     },
+                    computer_use: None,
                 }),
                 source_turn_id: thread.active_turn_id.clone(),
                 source_turn_index: None,
@@ -2778,7 +2811,7 @@ fn is_duplicate_overlay_item(
 fn is_superseded_overlay_item(
     local: &HydratedConversationItem,
     existing: &HydratedConversationItem,
-    active_turn_id: Option<&str>,
+    _active_turn_id: Option<&str>,
 ) -> bool {
     if is_duplicate_overlay_item(local, existing) {
         return true;
@@ -3198,6 +3231,7 @@ mod tests {
                         raw_output_json: None,
                         error_message: None,
                         progress_messages: Vec::new(),
+                        computer_use: None,
                     },
                 ),
                 source_turn_id: Some("turn-1".to_string()),
@@ -3253,7 +3287,7 @@ mod tests {
         let updates = drain_updates(&mut receiver);
         assert!(updates.iter().any(|update| matches!(
             update,
-            AppStoreUpdateRecord::ThreadItemChanged { key: update_key, item }
+            AppStoreUpdateRecord::ThreadItemChanged { key: update_key, item, .. }
                 if update_key == &key && item.id == "reasoning-1"
         )));
         assert!(
@@ -3275,6 +3309,71 @@ mod tests {
             }
             other => panic!("expected reasoning item, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn thread_item_changed_projects_multi_agent_targets_to_display_labels() {
+        let reducer = AppStoreReducer::new();
+        let parent_key = ThreadKey {
+            server_id: "srv".to_string(),
+            thread_id: "parent".to_string(),
+        };
+
+        reducer
+            .upsert_thread_snapshot(ThreadSnapshot::from_info("srv", make_thread_info("parent")));
+
+        let mut child_info = make_thread_info("child-thread");
+        child_info.agent_nickname = Some("Scout".to_string());
+        child_info.agent_role = Some("explorer".to_string());
+        child_info.parent_thread_id = Some("parent".to_string());
+        reducer.upsert_thread_snapshot(ThreadSnapshot::from_info("srv", child_info));
+
+        let mut receiver = reducer.subscribe();
+        assert!(drain_updates(&mut receiver).is_empty());
+
+        reducer.apply_item_update(
+            &parent_key,
+            HydratedConversationItem {
+                id: "collab-1".to_string(),
+                content: HydratedConversationItemContent::MultiAgentAction(
+                    crate::conversation_uniffi::HydratedMultiAgentActionData {
+                        tool: "spawnAgent".to_string(),
+                        status: AppOperationStatus::Completed,
+                        prompt: Some("Inspect".to_string()),
+                        targets: vec!["child-thread".to_string()],
+                        receiver_thread_ids: vec!["child-thread".to_string()],
+                        agent_states: vec![
+                            crate::conversation_uniffi::HydratedMultiAgentStateData {
+                                target_id: "child-thread".to_string(),
+                                status: crate::types::AppSubagentStatus::Running,
+                                message: Some("Working".to_string()),
+                            },
+                        ],
+                    },
+                ),
+                source_turn_id: Some("turn-1".to_string()),
+                source_turn_index: None,
+                timestamp: None,
+                is_from_user_turn_boundary: false,
+            },
+        );
+
+        let updates = drain_updates(&mut receiver);
+        let update_item = updates
+            .into_iter()
+            .find_map(|update| match update {
+                AppStoreUpdateRecord::ThreadItemChanged { key, item, .. } if key == parent_key => {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .expect("expected ThreadItemChanged update");
+
+        let HydratedConversationItemContent::MultiAgentAction(data) = update_item.content else {
+            panic!("expected multi-agent action update");
+        };
+        assert_eq!(data.targets, vec!["Scout [explorer]".to_string()]);
+        assert_eq!(data.receiver_thread_ids, vec!["child-thread".to_string()]);
     }
 
     #[test]
@@ -3312,7 +3411,7 @@ mod tests {
         let updates = drain_updates(&mut receiver);
         assert!(updates.iter().any(|update| matches!(
             update,
-            AppStoreUpdateRecord::ThreadItemChanged { key: update_key, item }
+            AppStoreUpdateRecord::ThreadItemChanged { key: update_key, item, .. }
                 if update_key == &key && item.id == "call-1"
         )));
         assert!(
@@ -3363,7 +3462,7 @@ mod tests {
         let updates = drain_updates(&mut receiver);
         assert!(updates.iter().any(|update| matches!(
             update,
-            AppStoreUpdateRecord::ThreadItemChanged { key: update_key, item }
+            AppStoreUpdateRecord::ThreadItemChanged { key: update_key, item, .. }
                 if update_key == &key && item.id == "mcp-1"
         )));
         assert!(
@@ -4179,6 +4278,7 @@ mod tests {
                     AppStoreUpdateRecord::ThreadItemChanged {
                         key: update_key,
                         item,
+                        ..
                     } if update_key == &key && item.id == "call-1"
                 )
             })

@@ -123,6 +123,19 @@ impl RemotePlatform {
     }
 }
 
+/// Outcome of running the Codex install/update flow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CodexInstallOutcome {
+    /// A new tag/version was downloaded or `npm install` ran.
+    Installed,
+    /// The tarball install saw `$HOME/.codlink/codex/$tag/codex` already present;
+    /// we just refreshed the symlink.
+    AlreadyAtLatestTag,
+}
+
+/// Seconds before we re-check GitHub for a newer Codex release.
+const CODEX_UPDATE_CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
+
 /// Outcome of running a remote command.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ExecResult {
@@ -1208,6 +1221,7 @@ printf 'path=%s\n' "${{PATH:-}}"
 printf 'pnpm_home=%s\n' "${{PNPM_HOME:-}}"
 printf 'nvm_bin=%s\n' "${{NVM_BIN:-}}"
 printf 'npm_prefix=%s\n' "$_codlink_npm_prefix"
+printf 'bun_global_bin=%s\n' "$_codlink_bun_global_bin"
 printf 'pnpm_global_bin=%s\n' "$_codlink_pnpm_global_bin"
 printf 'npm_global_bin=%s\n' "$_codlink_npm_global_bin"
 printf 'whoami='; whoami 2>/dev/null || true
@@ -1218,12 +1232,14 @@ printf '\n'
 for candidate in \
   "$HOME/.codlink/bin/codex" \
   "$HOME/.codlink/codex/node_modules/.bin/codex" \
+  "${{BUN_INSTALL:-$HOME/.bun}}/bin/codex" \
   "$HOME/.volta/bin/codex" \
   "$HOME/.local/bin/codex" \
   "${{PNPM_HOME:-}}/codex" \
   "${{NVM_BIN:-}}/codex" \
   "${{VOLTA_HOME:+$VOLTA_HOME/bin/codex}}" \
   "${{CARGO_HOME:-$HOME/.cargo}}/bin/codex" \
+  "${{_codlink_bun_global_bin:-}}/codex" \
   "${{_codlink_npm_global_bin:-}}/codex" \
   "${{_codlink_pnpm_global_bin:-}}/codex" \
   "/opt/homebrew/bin/codex" \
@@ -1554,7 +1570,7 @@ fi"#
     pub(crate) async fn install_latest_stable_codex(
         &self,
         platform: RemotePlatform,
-    ) -> Result<RemoteCodexBinary, SshError> {
+    ) -> Result<(RemoteCodexBinary, CodexInstallOutcome), SshError> {
         info!(
             "ssh install codex start platform={}",
             remote_platform_name(platform)
@@ -1588,7 +1604,9 @@ cleanup() {{
 }}
 trap cleanup EXIT
 mkdir -p "$dest_dir" "$HOME/.codlink/bin"
+status="up-to-date"
 if [ ! -x "$dest_bin" ]; then
+  status="installed"
   archive_path="$tmpdir/$asset_name"
   if command -v curl >/dev/null 2>&1; then
     curl -fsSL "$download_url" -o "$archive_path"
@@ -1612,7 +1630,7 @@ if [ ! -x "$dest_bin" ]; then
   fi
 fi
 ln -sf "$dest_bin" "$stable_bin"
-printf '%s' "$stable_bin""#,
+printf 'STATUS:%s\nPATH:%s\n' "$status" "$stable_bin""#,
             tag = shell_quote(&release.tag_name),
             asset_name = shell_quote(&release.asset_name),
             binary_name = shell_quote(&release.binary_name),
@@ -1629,21 +1647,19 @@ printf '%s' "$stable_bin""#,
                 },
             });
         }
-        let installed_path = result.stdout.trim();
+        let (status, installed_path) = parse_install_status_and_path(&result.stdout);
+        let outcome = match status.as_deref() {
+            Some("up-to-date") => CodexInstallOutcome::AlreadyAtLatestTag,
+            _ => CodexInstallOutcome::Installed,
+        };
+        let path = installed_path.unwrap_or_else(|| "$HOME/.codlink/bin/codex".to_string());
         info!(
-            "ssh install codex completed platform={} path={}",
+            "ssh install codex completed platform={} path={} outcome={:?}",
             remote_platform_name(platform),
-            if installed_path.is_empty() {
-                "$HOME/.codlink/bin/codex"
-            } else {
-                installed_path
-            }
+            path,
+            outcome
         );
-        Ok(RemoteCodexBinary::Codex(if installed_path.is_empty() {
-            "$HOME/.codlink/bin/codex".to_string()
-        } else {
-            installed_path.to_string()
-        }))
+        Ok((RemoteCodexBinary::Codex(path), outcome))
     }
 
     /// Install Codex via npm into `~/.codlink/codex/` (works on Windows and
@@ -1651,19 +1667,22 @@ printf '%s' "$stable_bin""#,
     pub(crate) async fn install_codex_via_npm(
         &self,
         shell: RemoteShell,
-    ) -> Result<RemoteCodexBinary, SshError> {
+    ) -> Result<(RemoteCodexBinary, CodexInstallOutcome), SshError> {
         info!(
             "ssh npm install codex start shell={}",
             remote_shell_name(shell)
         );
         let script = match shell {
             RemoteShell::PowerShell => {
+                // `@openai/codex@latest` forces npm past any semver range left
+                // in package.json from a previous install, so re-running this
+                // script reliably bumps to the newest published version.
                 r#"$ErrorActionPreference = 'Stop'
 $codlinkDir = Join-Path $env:USERPROFILE '.codlink\codex'
 if (-not (Test-Path $codlinkDir)) { New-Item -ItemType Directory -Path $codlinkDir -Force | Out-Null }
 Set-Location $codlinkDir
 if (-not (Test-Path 'package.json')) { npm init -y 2>$null | Out-Null }
-npm install @openai/codex 2>$null | Out-Null
+npm install @openai/codex@latest 2>$null | Out-Null
 $bin = Join-Path $codlinkDir 'node_modules\.bin\codex.cmd'
 if (Test-Path $bin) { Write-Output "CODEX_PATH:$bin" } else { Write-Error 'codex.cmd not found after install'; exit 1 }"#.to_string()
             }
@@ -1675,7 +1694,7 @@ codlink_dir="$HOME/.codlink/codex"
 mkdir -p "$codlink_dir"
 cd "$codlink_dir"
 [ -f package.json ] || npm init -y >/dev/null 2>&1
-npm install @openai/codex >/dev/null 2>&1
+npm install @openai/codex@latest >/dev/null 2>&1
 bin="$codlink_dir/node_modules/.bin/codex"
 if [ -x "$bin" ]; then printf 'CODEX_PATH:%s' "$bin"; else echo "codex not found after install" >&2; exit 1; fi"#,
                     profile_init = PROFILE_INIT
@@ -1712,7 +1731,10 @@ if [ -x "$bin" ]; then printf 'CODEX_PATH:%s' "$bin"; else echo "codex not found
                     remote_shell_name(shell),
                     path
                 );
-                Ok(RemoteCodexBinary::Codex(path))
+                Ok((
+                    RemoteCodexBinary::Codex(path),
+                    CodexInstallOutcome::Installed,
+                ))
             }
             _ => {
                 append_bridge_info_log(&format!(
@@ -1729,6 +1751,152 @@ if [ -x "$bin" ]; then printf 'CODEX_PATH:%s' "$bin"; else echo "codex not found
             }
         }
     }
+
+    /// Best-effort: if `binary` was installed by us under `~/.codlink/` and
+    /// the update sentinel is older than 24h, check for a newer release and
+    /// install it. Any failure along the way is swallowed and logged — the
+    /// caller continues to use the previously-resolved binary.
+    pub(crate) async fn maybe_update_managed_codex(
+        &self,
+        binary: &RemoteCodexBinary,
+        shell: RemoteShell,
+    ) -> Option<(RemoteCodexBinary, CodexInstallOutcome)> {
+        let path = binary.path();
+        let is_managed = path.contains("/.codlink/") || path.contains(r"\.codlink\");
+        if !is_managed {
+            trace!("ssh codex update check: skipping non-managed path={}", path);
+            return None;
+        }
+
+        match self.is_codex_update_check_due(shell).await {
+            Ok(true) => {}
+            Ok(false) => {
+                trace!("ssh codex update check: sentinel fresh, skipping");
+                return None;
+            }
+            Err(err) => {
+                warn!("ssh codex update check: sentinel check failed: {err}");
+                return None;
+            }
+        }
+
+        info!(
+            "ssh codex update check: probing for newer release path={} shell={}",
+            path,
+            remote_shell_name(shell)
+        );
+
+        let is_windows_shell = matches!(shell, RemoteShell::PowerShell);
+        let looks_like_npm =
+            path.contains("node_modules/.bin/codex") || path.contains(r"node_modules\.bin\codex");
+
+        let result: Result<(RemoteCodexBinary, CodexInstallOutcome), SshError> =
+            if looks_like_npm || is_windows_shell {
+                self.install_codex_via_npm(shell).await
+            } else {
+                match self.detect_remote_platform_with_shell(Some(shell)).await {
+                    Ok(platform) => self.install_latest_stable_codex(platform).await,
+                    Err(err) => Err(err),
+                }
+            };
+
+        // Always touch the sentinel — success, "up to date", or failure —
+        // so we don't re-hit GitHub/npm on every reconnect within 24h.
+        if let Err(err) = self.touch_codex_update_sentinel(shell).await {
+            warn!("ssh codex update check: sentinel touch failed: {err}");
+        }
+
+        match result {
+            Ok((new_binary, outcome)) => {
+                info!(
+                    "ssh codex update check: completed outcome={:?} path={}",
+                    outcome,
+                    new_binary.path()
+                );
+                Some((new_binary, outcome))
+            }
+            Err(err) => {
+                warn!(
+                    "ssh codex update check: update attempt failed, continuing with existing binary: {err}"
+                );
+                None
+            }
+        }
+    }
+
+    async fn is_codex_update_check_due(&self, shell: RemoteShell) -> Result<bool, SshError> {
+        let script = match shell {
+            RemoteShell::Posix => format!(
+                r#"sentinel="$HOME/.codlink/codex/.last-update-check"
+if [ -f "$sentinel" ]; then
+  now=$(date +%s 2>/dev/null || echo 0)
+  last=$(stat -c %Y "$sentinel" 2>/dev/null || stat -f %m "$sentinel" 2>/dev/null || echo 0)
+  if [ "$last" -gt 0 ] && [ "$now" -gt 0 ]; then
+    age=$((now - last))
+    if [ "$age" -lt {interval} ]; then
+      printf 'FRESH'
+      exit 0
+    fi
+  fi
+fi
+printf 'STALE'"#,
+                interval = CODEX_UPDATE_CHECK_INTERVAL_SECS
+            ),
+            RemoteShell::PowerShell => format!(
+                r#"$sentinel = Join-Path $env:USERPROFILE '.codlink\codex\.last-update-check'
+if (Test-Path $sentinel) {{
+  $age = (Get-Date) - (Get-Item $sentinel).LastWriteTime
+  if ($age.TotalSeconds -lt {interval}) {{ Write-Output 'FRESH'; exit 0 }}
+}}
+Write-Output 'STALE'"#,
+                interval = CODEX_UPDATE_CHECK_INTERVAL_SECS
+            ),
+        };
+        let result = self.exec_shell(&script, shell).await?;
+        Ok(!result.stdout.trim().eq_ignore_ascii_case("FRESH"))
+    }
+
+    async fn touch_codex_update_sentinel(&self, shell: RemoteShell) -> Result<(), SshError> {
+        let script = match shell {
+            RemoteShell::Posix => r#"mkdir -p "$HOME/.codlink/codex" 2>/dev/null || true
+touch "$HOME/.codlink/codex/.last-update-check" 2>/dev/null || true"#
+                .to_string(),
+            RemoteShell::PowerShell => {
+                r#"$dir = Join-Path $env:USERPROFILE '.codlink\codex'
+if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+$sentinel = Join-Path $dir '.last-update-check'
+if (Test-Path $sentinel) { (Get-Item $sentinel).LastWriteTime = Get-Date } else { Set-Content -Path $sentinel -Value '' }"#
+                    .to_string()
+            }
+        };
+        self.exec_shell(&script, shell).await?;
+        Ok(())
+    }
+}
+
+/// Parse the `STATUS:...` / `PATH:...` lines emitted by the tarball install
+/// script. Either may be missing (older script output / truncation) —
+/// callers must handle `None` gracefully.
+fn parse_install_status_and_path(stdout: &str) -> (Option<String>, Option<String>) {
+    let mut status = None;
+    let mut path = None;
+    for line in stdout.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("STATUS:") {
+            status = Some(rest.trim().to_string());
+        } else if let Some(rest) = line.strip_prefix("PATH:") {
+            path = Some(rest.trim().to_string());
+        }
+    }
+    // Backcompat: if neither prefix was emitted, treat entire trimmed stdout
+    // as the path (matches pre-STATUS format).
+    if status.is_none() && path.is_none() {
+        let trimmed = stdout.trim();
+        if !trimmed.is_empty() {
+            path = Some(trimmed.to_string());
+        }
+    }
+    (status, path)
 }
 
 // ---------------------------------------------------------------------------
@@ -1838,12 +2006,13 @@ async fn proxy_connection(
 /// shell via a temp file.
 const PROFILE_INIT: &str = r#"_codlink_pf="/tmp/.codlink_path_$$"; for f in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.zprofile" "$HOME/.zshrc"; do [ -f "$f" ] && (. "$f" 2>/dev/null; echo "$PATH") > "$_codlink_pf" 2>/dev/null && PATH="$(cat "$_codlink_pf")" ; done; rm -f "$_codlink_pf" 2>/dev/null;"#;
 
-/// Shell snippet that probes npm/pnpm for their global binary directories.
-/// Sets `_codlink_npm_prefix`, `_codlink_npm_global_bin`, and
-/// `_codlink_pnpm_global_bin`.
+/// Shell snippet that probes npm/pnpm/bun for their global binary directories.
+/// Sets `_codlink_npm_prefix`, `_codlink_npm_global_bin`,
+/// `_codlink_pnpm_global_bin`, and `_codlink_bun_global_bin`.
 const PACKAGE_MANAGER_PROBE: &str = r#"_codlink_npm_prefix=""
 _codlink_npm_global_bin=""
 _codlink_pnpm_global_bin=""
+_codlink_bun_global_bin=""
 if command -v npm >/dev/null 2>&1; then
   _codlink_npm_prefix="$(npm config get prefix 2>/dev/null || true)"
   case "$_codlink_npm_prefix" in
@@ -1857,6 +2026,9 @@ if command -v npm >/dev/null 2>&1; then
 fi
 if command -v pnpm >/dev/null 2>&1; then
   _codlink_pnpm_global_bin="$(pnpm bin -g 2>/dev/null || true)"
+fi
+if command -v bun >/dev/null 2>&1; then
+  _codlink_bun_global_bin="$(bun pm bin -g 2>/dev/null || true)"
 fi"#;
 
 fn resolve_codex_binary_script_posix() -> String {
@@ -1881,6 +2053,7 @@ _codlink_emit_from_dir() {{
 _codlink_emit_candidate codex "$HOME/.codlink/bin/codex"
 _codlink_emit_candidate codex "$HOME/.codlink/codex/node_modules/.bin/codex"
 _codlink_emit_candidate codex "$(command -v codex 2>/dev/null || true)"
+_codlink_emit_candidate codex "${{BUN_INSTALL:-$HOME/.bun}}/bin/codex"
 _codlink_emit_candidate codex "$HOME/.volta/bin/codex"
 _codlink_emit_candidate codex "$HOME/.local/bin/codex"
 _codlink_emit_from_dir codex codex "${{PNPM_HOME:-}}"
@@ -1890,6 +2063,7 @@ _codlink_emit_from_dir codex codex "${{CARGO_HOME:-$HOME/.cargo}}/bin"
 _codlink_emit_candidate codex "/opt/homebrew/bin/codex"
 _codlink_emit_candidate codex "/usr/local/bin/codex"
 {pkg_probe}
+_codlink_emit_from_dir codex codex "$_codlink_bun_global_bin"
 _codlink_emit_from_dir codex codex "$_codlink_npm_global_bin"
 _codlink_emit_from_dir codex codex "$_codlink_pnpm_global_bin""#,
         profile_init = PROFILE_INIT,
@@ -2236,12 +2410,12 @@ mod tests {
     fn test_server_launch_command_for_codex() {
         let command = server_launch_command(
             &RemoteCodexBinary::Codex("/usr/local/bin/codex".into()),
-            "ws://0.0.0.0:8390",
+            "ws://127.0.0.1:8390",
             RemoteShell::Posix,
         );
         assert_eq!(
             command,
-            "'/usr/local/bin/codex' app-server --listen 'ws://0.0.0.0:8390'"
+            "'/usr/local/bin/codex' app-server --listen 'ws://127.0.0.1:8390'"
         );
     }
 
@@ -2392,16 +2566,15 @@ mod tests {
         let script = resolve_codex_binary_script_posix();
         assert!(script.contains("npm config get prefix"));
         assert!(script.contains("pnpm bin -g"));
+        assert!(script.contains("bun pm bin -g"));
+        assert!(script.contains("${BUN_INSTALL:-$HOME/.bun}/bin/codex"));
         assert!(script.contains("PNPM_HOME"));
         assert!(script.contains("NVM_BIN"));
         assert!(script.contains("$HOME/.volta/bin/codex"));
         assert!(script.contains("$HOME/.local/bin/codex"));
         assert!(script.contains("/opt/homebrew/bin/codex"));
         assert!(script.contains("/usr/local/bin/codex"));
-        assert!(
-            script.find("command -v codex 2>/dev/null || true")
-                < script.find("pnpm bin -g").unwrap()
-        );
+        assert!(script.find("command -v codex 2>/dev/null || true") < script.find("pnpm bin -g"));
         assert!(!script.contains("codex-app-server"));
     }
 

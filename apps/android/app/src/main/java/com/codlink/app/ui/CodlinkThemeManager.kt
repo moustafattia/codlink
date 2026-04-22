@@ -241,10 +241,10 @@ object CodlinkThemeManager {
         get() = themeIndex.filter { it.type == CodlinkColorThemeType.DARK }
 
     val selectedLightSlug: String
-        get() = preferences?.getString(SELECTED_LIGHT_THEME_KEY, null) ?: "codex-light"
+        get() = preferences?.getString(SELECTED_LIGHT_THEME_KEY, null) ?: "kitty-litter-light"
 
     val selectedDarkSlug: String
-        get() = preferences?.getString(SELECTED_DARK_THEME_KEY, null) ?: "codex-dark"
+        get() = preferences?.getString(SELECTED_DARK_THEME_KEY, null) ?: "kitty-litter-dark"
 
     private val preferences
         get() = appContext?.getSharedPreferences(UI_PREFERENCES_NAME, Context.MODE_PRIVATE)

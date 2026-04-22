@@ -114,8 +114,51 @@ val AppServerSnapshot.statusColor: Color
         currentConnectionStep?.state == AppConnectionStepState.AWAITING_USER_INPUT -> WarningOrange
         connectionProgressLabel != null -> AccentGreen
         transportState == AppServerTransportState.CONNECTED && !isLocal && account == null -> WarningOrange
-        transportState == AppServerTransportState.CONNECTED && ipcState == AppServerIpcState.DISCONNECTED -> WarningOrange
+        // Only surface IPC-disconnected as "warning orange" when the
+        // experimental IPC feature is enabled — mirrors iOS
+        // `AppServerSnapshot+UI.swift` + the same gate in
+        // `statusDotState` above. Without this, the conversation header
+        // dot stays orange on every remote server that doesn't speak IPC.
+        transportState == AppServerTransportState.CONNECTED &&
+            ipcState == AppServerIpcState.DISCONNECTED &&
+            com.codlink.app.ui.ExperimentalFeatures.isEnabled(
+                com.codlink.app.ui.LitterFeature.IPC,
+            ) -> WarningOrange
         else -> transportState.accentColor
+    }
+
+/**
+ * Stable mapping to the shared `StatusDotState` palette (green/orange/red) so
+ * the server dot renders the same colors as the task indicator across themes.
+ */
+val AppServerSnapshot.statusDotState: com.codlink.app.ui.common.StatusDotState
+    get() = when {
+        currentConnectionStep?.state == AppConnectionStepState.FAILED ->
+            com.codlink.app.ui.common.StatusDotState.ERROR
+        currentConnectionStep?.state == AppConnectionStepState.AWAITING_USER_INPUT ->
+            com.codlink.app.ui.common.StatusDotState.PENDING
+        connectionProgressLabel != null ->
+            com.codlink.app.ui.common.StatusDotState.PENDING
+        transportState == AppServerTransportState.CONNECTED && !isLocal && account == null ->
+            com.codlink.app.ui.common.StatusDotState.PENDING
+        // Only treat IPC-disconnected as pending when the experimental IPC
+        // feature is actually enabled — mirrors iOS `AppServerSnapshot+UI.swift`
+        // gate on `ExperimentalFeatures.shared.isEnabled(.ipc)`. Without this,
+        // remote servers (which don't speak IPC) would blink orange even after
+        // they've fully connected.
+        transportState == AppServerTransportState.CONNECTED &&
+            ipcState == AppServerIpcState.DISCONNECTED &&
+            com.codlink.app.ui.ExperimentalFeatures.isEnabled(
+                com.codlink.app.ui.LitterFeature.IPC,
+            ) ->
+            com.codlink.app.ui.common.StatusDotState.PENDING
+        transportState == AppServerTransportState.CONNECTED ->
+            com.codlink.app.ui.common.StatusDotState.OK
+        transportState == AppServerTransportState.CONNECTING ->
+            com.codlink.app.ui.common.StatusDotState.PENDING
+        transportState == AppServerTransportState.UNRESPONSIVE ->
+            com.codlink.app.ui.common.StatusDotState.PENDING
+        else -> com.codlink.app.ui.common.StatusDotState.IDLE
     }
 
 // --- AppThreadSnapshot extensions --------------------------------------------

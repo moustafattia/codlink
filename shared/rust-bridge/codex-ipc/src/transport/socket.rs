@@ -1,7 +1,10 @@
 //! Socket path resolution and Unix domain socket connection helpers.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+#[cfg(unix)]
+use std::path::Path;
+#[cfg(unix)]
 use crate::error::TransportError;
 
 #[cfg(unix)]
@@ -18,6 +21,15 @@ pub fn resolve_socket_path() -> PathBuf {
     path
 }
 
+/// Compute a stable placeholder path on non-Unix platforms.
+#[cfg(not(unix))]
+pub fn resolve_socket_path() -> PathBuf {
+    let mut path = std::env::temp_dir();
+    path.push("codex-ipc");
+    path.push("ipc.sock");
+    path
+}
+
 /// Connect to a Unix domain socket at the given path.
 #[cfg(unix)]
 pub async fn connect_unix(path: &Path) -> Result<tokio::net::UnixStream, TransportError> {
@@ -26,7 +38,7 @@ pub async fn connect_unix(path: &Path) -> Result<tokio::net::UnixStream, Transpo
         .map_err(TransportError::Io)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
