@@ -122,7 +122,7 @@ val AppServerSnapshot.statusColor: Color
         transportState == AppServerTransportState.CONNECTED &&
             ipcState == AppServerIpcState.DISCONNECTED &&
             com.codlink.app.ui.ExperimentalFeatures.isEnabled(
-                com.codlink.app.ui.LitterFeature.IPC,
+                com.codlink.app.ui.CodlinkFeature.IPC,
             ) -> WarningOrange
         else -> transportState.accentColor
     }
@@ -149,7 +149,7 @@ val AppServerSnapshot.statusDotState: com.codlink.app.ui.common.StatusDotState
         transportState == AppServerTransportState.CONNECTED &&
             ipcState == AppServerIpcState.DISCONNECTED &&
             com.codlink.app.ui.ExperimentalFeatures.isEnabled(
-                com.codlink.app.ui.LitterFeature.IPC,
+                com.codlink.app.ui.CodlinkFeature.IPC,
             ) ->
             com.codlink.app.ui.common.StatusDotState.PENDING
         transportState == AppServerTransportState.CONNECTED ->
