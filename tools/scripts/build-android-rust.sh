@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 WORKSPACE_DIR="$REPO_DIR/shared/rust-bridge"
 OUT_DIR="$REPO_DIR/apps/android/core/bridge/src/main/jniLibs"
-SYNC_SCRIPT="$REPO_DIR/apps/ios/scripts/sync-codex.sh"
+SYNC_SCRIPT="$REPO_DIR/tools/scripts/sync-codex.sh"
 DEFAULT_ANDROID_ABIS="arm64-v8a"
 DEFAULT_ANDROID_RUST_PROFILE="android-dev"
 

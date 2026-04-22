@@ -128,7 +128,7 @@ impl RemotePlatform {
 pub(crate) enum CodexInstallOutcome {
     /// A new tag/version was downloaded or `npm install` ran.
     Installed,
-    /// The tarball install saw `$HOME/.litter/codex/$tag/codex` already present;
+    /// The tarball install saw `$HOME/.codlink/codex/$tag/codex` already present;
     /// we just refreshed the symlink.
     AlreadyAtLatestTag,
 }
@@ -1220,18 +1220,18 @@ printf 'shell=%s\n' "${{SHELL:-}}"
 printf 'path=%s\n' "${{PATH:-}}"
 printf 'pnpm_home=%s\n' "${{PNPM_HOME:-}}"
 printf 'nvm_bin=%s\n' "${{NVM_BIN:-}}"
-printf 'npm_prefix=%s\n' "$_litter_npm_prefix"
-printf 'bun_global_bin=%s\n' "$_litter_bun_global_bin"
-printf 'pnpm_global_bin=%s\n' "$_litter_pnpm_global_bin"
-printf 'npm_global_bin=%s\n' "$_litter_npm_global_bin"
+printf 'npm_prefix=%s\n' "$_codlink_npm_prefix"
+printf 'bun_global_bin=%s\n' "$_codlink_bun_global_bin"
+printf 'pnpm_global_bin=%s\n' "$_codlink_pnpm_global_bin"
+printf 'npm_global_bin=%s\n' "$_codlink_npm_global_bin"
 printf 'whoami='; whoami 2>/dev/null || true
 printf 'pwd='; pwd 2>/dev/null || true
 printf 'command -v codex='
 command -v codex 2>/dev/null || printf '<missing>'
 printf '\n'
 for candidate in \
-  "$HOME/.litter/bin/codex" \
-  "$HOME/.litter/codex/node_modules/.bin/codex" \
+  "$HOME/.codlink/bin/codex" \
+  "$HOME/.codlink/codex/node_modules/.bin/codex" \
   "${{BUN_INSTALL:-$HOME/.bun}}/bin/codex" \
   "$HOME/.volta/bin/codex" \
   "$HOME/.local/bin/codex" \
@@ -1239,9 +1239,9 @@ for candidate in \
   "${{NVM_BIN:-}}/codex" \
   "${{VOLTA_HOME:+$VOLTA_HOME/bin/codex}}" \
   "${{CARGO_HOME:-$HOME/.cargo}}/bin/codex" \
-  "${{_litter_bun_global_bin:-}}/codex" \
-  "${{_litter_npm_global_bin:-}}/codex" \
-  "${{_litter_pnpm_global_bin:-}}/codex" \
+  "${{_codlink_bun_global_bin:-}}/codex" \
+  "${{_codlink_npm_global_bin:-}}/codex" \
+  "${{_codlink_pnpm_global_bin:-}}/codex" \
   "/opt/homebrew/bin/codex" \
   "/usr/local/bin/codex" 
 do
@@ -1595,15 +1595,15 @@ tag={tag}
 asset_name={asset_name}
 binary_name={binary_name}
 download_url={download_url}
-dest_dir="$HOME/.litter/codex/$tag"
+dest_dir="$HOME/.codlink/codex/$tag"
 dest_bin="$dest_dir/codex"
-stable_bin="$HOME/.litter/bin/codex"
-tmpdir="$(mktemp -d "${{TMPDIR:-/tmp}}/litter-codex.XXXXXX")"
+stable_bin="$HOME/.codlink/bin/codex"
+tmpdir="$(mktemp -d "${{TMPDIR:-/tmp}}/codlink-codex.XXXXXX")"
 cleanup() {{
   rm -rf "$tmpdir"
 }}
 trap cleanup EXIT
-mkdir -p "$dest_dir" "$HOME/.litter/bin"
+mkdir -p "$dest_dir" "$HOME/.codlink/bin"
 status="up-to-date"
 if [ ! -x "$dest_bin" ]; then
   status="installed"
@@ -1652,7 +1652,7 @@ printf 'STATUS:%s\nPATH:%s\n' "$status" "$stable_bin""#,
             Some("up-to-date") => CodexInstallOutcome::AlreadyAtLatestTag,
             _ => CodexInstallOutcome::Installed,
         };
-        let path = installed_path.unwrap_or_else(|| "$HOME/.litter/bin/codex".to_string());
+        let path = installed_path.unwrap_or_else(|| "$HOME/.codlink/bin/codex".to_string());
         info!(
             "ssh install codex completed platform={} path={} outcome={:?}",
             remote_platform_name(platform),
@@ -1662,7 +1662,7 @@ printf 'STATUS:%s\nPATH:%s\n' "$status" "$stable_bin""#,
         Ok((RemoteCodexBinary::Codex(path), outcome))
     }
 
-    /// Install Codex via npm into `~/.litter/codex/` (works on Windows and
+    /// Install Codex via npm into `~/.codlink/codex/` (works on Windows and
     /// as a POSIX fallback when no binary release is available).
     pub(crate) async fn install_codex_via_npm(
         &self,
@@ -1678,24 +1678,24 @@ printf 'STATUS:%s\nPATH:%s\n' "$status" "$stable_bin""#,
                 // in package.json from a previous install, so re-running this
                 // script reliably bumps to the newest published version.
                 r#"$ErrorActionPreference = 'Stop'
-$litterDir = Join-Path $env:USERPROFILE '.litter\codex'
-if (-not (Test-Path $litterDir)) { New-Item -ItemType Directory -Path $litterDir -Force | Out-Null }
-Set-Location $litterDir
+$codlinkDir = Join-Path $env:USERPROFILE '.codlink\codex'
+if (-not (Test-Path $codlinkDir)) { New-Item -ItemType Directory -Path $codlinkDir -Force | Out-Null }
+Set-Location $codlinkDir
 if (-not (Test-Path 'package.json')) { npm init -y 2>$null | Out-Null }
 npm install @openai/codex@latest 2>$null | Out-Null
-$bin = Join-Path $litterDir 'node_modules\.bin\codex.cmd'
+$bin = Join-Path $codlinkDir 'node_modules\.bin\codex.cmd'
 if (Test-Path $bin) { Write-Output "CODEX_PATH:$bin" } else { Write-Error 'codex.cmd not found after install'; exit 1 }"#.to_string()
             }
             RemoteShell::Posix => {
                 format!(
                     r#"{profile_init}
 set -e
-litter_dir="$HOME/.litter/codex"
-mkdir -p "$litter_dir"
-cd "$litter_dir"
+codlink_dir="$HOME/.codlink/codex"
+mkdir -p "$codlink_dir"
+cd "$codlink_dir"
 [ -f package.json ] || npm init -y >/dev/null 2>&1
 npm install @openai/codex@latest >/dev/null 2>&1
-bin="$litter_dir/node_modules/.bin/codex"
+bin="$codlink_dir/node_modules/.bin/codex"
 if [ -x "$bin" ]; then printf 'CODEX_PATH:%s' "$bin"; else echo "codex not found after install" >&2; exit 1; fi"#,
                     profile_init = PROFILE_INIT
                 )
@@ -1752,7 +1752,7 @@ if [ -x "$bin" ]; then printf 'CODEX_PATH:%s' "$bin"; else echo "codex not found
         }
     }
 
-    /// Best-effort: if `binary` was installed by us under `~/.litter/` and
+    /// Best-effort: if `binary` was installed by us under `~/.codlink/` and
     /// the update sentinel is older than 24h, check for a newer release and
     /// install it. Any failure along the way is swallowed and logged — the
     /// caller continues to use the previously-resolved binary.
@@ -1762,7 +1762,7 @@ if [ -x "$bin" ]; then printf 'CODEX_PATH:%s' "$bin"; else echo "codex not found
         shell: RemoteShell,
     ) -> Option<(RemoteCodexBinary, CodexInstallOutcome)> {
         let path = binary.path();
-        let is_managed = path.contains("/.litter/") || path.contains(r"\.litter\");
+        let is_managed = path.contains("/.codlink/") || path.contains(r"\.codlink\");
         if !is_managed {
             trace!("ssh codex update check: skipping non-managed path={}", path);
             return None;
@@ -1827,7 +1827,7 @@ if [ -x "$bin" ]; then printf 'CODEX_PATH:%s' "$bin"; else echo "codex not found
     async fn is_codex_update_check_due(&self, shell: RemoteShell) -> Result<bool, SshError> {
         let script = match shell {
             RemoteShell::Posix => format!(
-                r#"sentinel="$HOME/.litter/codex/.last-update-check"
+                r#"sentinel="$HOME/.codlink/codex/.last-update-check"
 if [ -f "$sentinel" ]; then
   now=$(date +%s 2>/dev/null || echo 0)
   last=$(stat -c %Y "$sentinel" 2>/dev/null || stat -f %m "$sentinel" 2>/dev/null || echo 0)
@@ -1843,7 +1843,7 @@ printf 'STALE'"#,
                 interval = CODEX_UPDATE_CHECK_INTERVAL_SECS
             ),
             RemoteShell::PowerShell => format!(
-                r#"$sentinel = Join-Path $env:USERPROFILE '.litter\codex\.last-update-check'
+                r#"$sentinel = Join-Path $env:USERPROFILE '.codlink\codex\.last-update-check'
 if (Test-Path $sentinel) {{
   $age = (Get-Date) - (Get-Item $sentinel).LastWriteTime
   if ($age.TotalSeconds -lt {interval}) {{ Write-Output 'FRESH'; exit 0 }}
@@ -1858,11 +1858,11 @@ Write-Output 'STALE'"#,
 
     async fn touch_codex_update_sentinel(&self, shell: RemoteShell) -> Result<(), SshError> {
         let script = match shell {
-            RemoteShell::Posix => r#"mkdir -p "$HOME/.litter/codex" 2>/dev/null || true
-touch "$HOME/.litter/codex/.last-update-check" 2>/dev/null || true"#
+            RemoteShell::Posix => r#"mkdir -p "$HOME/.codlink/codex" 2>/dev/null || true
+touch "$HOME/.codlink/codex/.last-update-check" 2>/dev/null || true"#
                 .to_string(),
             RemoteShell::PowerShell => {
-                r#"$dir = Join-Path $env:USERPROFILE '.litter\codex'
+                r#"$dir = Join-Path $env:USERPROFILE '.codlink\codex'
 if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 $sentinel = Join-Path $dir '.last-update-check'
 if (Test-Path $sentinel) { (Get-Item $sentinel).LastWriteTime = Get-Date } else { Set-Content -Path $sentinel -Value '' }"#
@@ -2004,78 +2004,78 @@ async fn proxy_connection(
 /// Runs each file in a subshell so shell-specific syntax cannot crash the
 /// parent `/bin/sh` process, then imports the resulting PATH into the current
 /// shell via a temp file.
-const PROFILE_INIT: &str = r#"_litter_pf="/tmp/.litter_path_$$"; for f in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.zprofile" "$HOME/.zshrc"; do [ -f "$f" ] && (. "$f" 2>/dev/null; echo "$PATH") > "$_litter_pf" 2>/dev/null && PATH="$(cat "$_litter_pf")" ; done; rm -f "$_litter_pf" 2>/dev/null;"#;
+const PROFILE_INIT: &str = r#"_codlink_pf="/tmp/.codlink_path_$$"; for f in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.zprofile" "$HOME/.zshrc"; do [ -f "$f" ] && (. "$f" 2>/dev/null; echo "$PATH") > "$_codlink_pf" 2>/dev/null && PATH="$(cat "$_codlink_pf")" ; done; rm -f "$_codlink_pf" 2>/dev/null;"#;
 
-/// Shell snippet that probes npm/pnpm for their global binary directories.
-/// Sets `_litter_npm_prefix`, `_litter_npm_global_bin`,
-/// `_litter_pnpm_global_bin`, and `_litter_bun_global_bin`.
-const PACKAGE_MANAGER_PROBE: &str = r#"_litter_npm_prefix=""
-_litter_npm_global_bin=""
-_litter_pnpm_global_bin=""
-_litter_bun_global_bin=""
+/// Shell snippet that probes npm/pnpm/bun for their global binary directories.
+/// Sets `_codlink_npm_prefix`, `_codlink_npm_global_bin`,
+/// `_codlink_pnpm_global_bin`, and `_codlink_bun_global_bin`.
+const PACKAGE_MANAGER_PROBE: &str = r#"_codlink_npm_prefix=""
+_codlink_npm_global_bin=""
+_codlink_pnpm_global_bin=""
+_codlink_bun_global_bin=""
 if command -v npm >/dev/null 2>&1; then
-  _litter_npm_prefix="$(npm config get prefix 2>/dev/null || true)"
-  case "$_litter_npm_prefix" in
+  _codlink_npm_prefix="$(npm config get prefix 2>/dev/null || true)"
+  case "$_codlink_npm_prefix" in
     "" | "undefined" | "null")
-      _litter_npm_prefix=""
+      _codlink_npm_prefix=""
       ;;
     *)
-      _litter_npm_global_bin="$_litter_npm_prefix/bin"
+      _codlink_npm_global_bin="$_codlink_npm_prefix/bin"
       ;;
   esac
 fi
 if command -v pnpm >/dev/null 2>&1; then
-  _litter_pnpm_global_bin="$(pnpm bin -g 2>/dev/null || true)"
+  _codlink_pnpm_global_bin="$(pnpm bin -g 2>/dev/null || true)"
 fi
 if command -v bun >/dev/null 2>&1; then
-  _litter_bun_global_bin="$(bun pm bin -g 2>/dev/null || true)"
+  _codlink_bun_global_bin="$(bun pm bin -g 2>/dev/null || true)"
 fi"#;
 
 fn resolve_codex_binary_script_posix() -> String {
     format!(
         r#"{profile_init}
-_litter_emit_candidate() {{
-  _litter_selector="$1"
-  _litter_path="$2"
-  if [ -n "$_litter_path" ] && [ -f "$_litter_path" ] && [ -x "$_litter_path" ]; then
-    printf '%s:%s' "$_litter_selector" "$_litter_path"
+_codlink_emit_candidate() {{
+  _codlink_selector="$1"
+  _codlink_path="$2"
+  if [ -n "$_codlink_path" ] && [ -f "$_codlink_path" ] && [ -x "$_codlink_path" ]; then
+    printf '%s:%s' "$_codlink_selector" "$_codlink_path"
     exit 0
   fi
 }}
-_litter_emit_from_dir() {{
-  _litter_selector="$1"
-  _litter_name="$2"
-  _litter_dir="$3"
-  if [ -n "$_litter_dir" ]; then
-    _litter_emit_candidate "$_litter_selector" "$_litter_dir/$_litter_name"
+_codlink_emit_from_dir() {{
+  _codlink_selector="$1"
+  _codlink_name="$2"
+  _codlink_dir="$3"
+  if [ -n "$_codlink_dir" ]; then
+    _codlink_emit_candidate "$_codlink_selector" "$_codlink_dir/$_codlink_name"
   fi
 }}
-_litter_emit_candidate codex "$HOME/.litter/bin/codex"
-_litter_emit_candidate codex "$HOME/.litter/codex/node_modules/.bin/codex"
-_litter_emit_candidate codex "$(command -v codex 2>/dev/null || true)"
-_litter_emit_candidate codex "${{BUN_INSTALL:-$HOME/.bun}}/bin/codex"
-_litter_emit_candidate codex "$HOME/.volta/bin/codex"
-_litter_emit_candidate codex "$HOME/.local/bin/codex"
-_litter_emit_from_dir codex codex "${{PNPM_HOME:-}}"
-_litter_emit_from_dir codex codex "${{NVM_BIN:-}}"
-_litter_emit_from_dir codex codex "${{VOLTA_HOME:+$VOLTA_HOME/bin}}"
-_litter_emit_from_dir codex codex "${{CARGO_HOME:-$HOME/.cargo}}/bin"
-_litter_emit_candidate codex "/opt/homebrew/bin/codex"
-_litter_emit_candidate codex "/usr/local/bin/codex"
+_codlink_emit_candidate codex "$HOME/.codlink/bin/codex"
+_codlink_emit_candidate codex "$HOME/.codlink/codex/node_modules/.bin/codex"
+_codlink_emit_candidate codex "$(command -v codex 2>/dev/null || true)"
+_codlink_emit_candidate codex "${{BUN_INSTALL:-$HOME/.bun}}/bin/codex"
+_codlink_emit_candidate codex "$HOME/.volta/bin/codex"
+_codlink_emit_candidate codex "$HOME/.local/bin/codex"
+_codlink_emit_from_dir codex codex "${{PNPM_HOME:-}}"
+_codlink_emit_from_dir codex codex "${{NVM_BIN:-}}"
+_codlink_emit_from_dir codex codex "${{VOLTA_HOME:+$VOLTA_HOME/bin}}"
+_codlink_emit_from_dir codex codex "${{CARGO_HOME:-$HOME/.cargo}}/bin"
+_codlink_emit_candidate codex "/opt/homebrew/bin/codex"
+_codlink_emit_candidate codex "/usr/local/bin/codex"
 {pkg_probe}
-_litter_emit_from_dir codex codex "$_litter_bun_global_bin"
-_litter_emit_from_dir codex codex "$_litter_npm_global_bin"
-_litter_emit_from_dir codex codex "$_litter_pnpm_global_bin""#,
+_codlink_emit_from_dir codex codex "$_codlink_bun_global_bin"
+_codlink_emit_from_dir codex codex "$_codlink_npm_global_bin"
+_codlink_emit_from_dir codex codex "$_codlink_pnpm_global_bin""#,
         profile_init = PROFILE_INIT,
         pkg_probe = PACKAGE_MANAGER_PROBE
     )
 }
 
 fn resolve_codex_binary_script_powershell() -> String {
-    r#"$litterBin = Join-Path $env:USERPROFILE '.litter\bin\codex.cmd'
-if (Test-Path $litterBin) { Write-Output "codex:$litterBin"; exit 0 }
-$litterNpm = Join-Path $env:USERPROFILE '.litter\codex\node_modules\.bin\codex.cmd'
-if (Test-Path $litterNpm) { Write-Output "codex:$litterNpm"; exit 0 }
+    r#"$codlinkBin = Join-Path $env:USERPROFILE '.codlink\bin\codex.cmd'
+if (Test-Path $codlinkBin) { Write-Output "codex:$codlinkBin"; exit 0 }
+$codlinkNpm = Join-Path $env:USERPROFILE '.codlink\codex\node_modules\.bin\codex.cmd'
+if (Test-Path $codlinkNpm) { Write-Output "codex:$codlinkNpm"; exit 0 }
 $found = Get-Command codex -ErrorAction SilentlyContinue
 if ($found) { Write-Output "codex:$($found.Source)"; exit 0 }"#
         .to_string()
@@ -2345,7 +2345,7 @@ async fn fetch_latest_stable_codex_release(
 ) -> Result<ResolvedCodexRelease, SshError> {
     let releases = reqwest::Client::new()
         .get("https://api.github.com/repos/openai/codex/releases?per_page=30")
-        .header(reqwest::header::USER_AGENT, "litter-codex-mobile")
+        .header(reqwest::header::USER_AGENT, "codlink-codex-mobile")
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()
         .await

@@ -716,15 +716,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
-name = "autotools"
-version = "0.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef941527c41b0fc0dd48511a8154cd5fc7e29200a0ff8b7203c5d777dbc795cf"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "aws-lc-rs"
 version = "1.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1601,8 +1592,6 @@ name = "codex-bridge"
 version = "0.1.0"
 dependencies = [
  "codex-app-server-protocol",
- "codex-apply-patch",
- "codex-core",
  "codex-mobile-client",
  "jni 0.21.1",
  "openssl-sys",
@@ -2042,13 +2031,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-ios-audio"
-version = "0.1.0"
-dependencies = [
- "webrtc-audio-processing",
-]
-
-[[package]]
 name = "codex-ipc"
 version = "0.1.0"
 dependencies = [
@@ -2166,7 +2148,6 @@ dependencies = [
  "codex-app-server",
  "codex-app-server-client",
  "codex-app-server-protocol",
- "codex-apply-patch",
  "codex-arg0",
  "codex-cloud-requirements",
  "codex-config",
@@ -2174,7 +2155,6 @@ dependencies = [
  "codex-exec-server",
  "codex-feedback",
  "codex-git-utils",
- "codex-ios-audio",
  "codex-ipc",
  "codex-login",
  "codex-protocol",
@@ -2192,7 +2172,6 @@ dependencies = [
  "serde_json",
  "sha1 0.10.6",
  "shlex",
- "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite 0.26.2",
@@ -11210,35 +11189,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "webrtc-audio-processing"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "152b13209baa2c855b807644d97c66639e7728824feb3d7f24424044f29443d3"
-dependencies = [
- "webrtc-audio-processing-config",
- "webrtc-audio-processing-sys",
-]
-
-[[package]]
-name = "webrtc-audio-processing-config"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50855ea7f6d280506c850189db18cf3ee3f2f1b06cf193e31cad9d4dd2ee7d36"
-
-[[package]]
-name = "webrtc-audio-processing-sys"
-version = "2.0.0"
-dependencies = [
- "anyhow",
- "autotools",
- "bindgen",
- "cc",
- "fs_extra",
- "pkg-config",
- "regex",
-]
-
-[[package]]
 name = "weedle2"
 version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12344,3 +12294,7 @@ dependencies = [
  "quote",
  "syn 2.0.117",
 ]
+
+[[patch.unused]]
+name = "webrtc-audio-processing-sys"
+version = "2.0.0"

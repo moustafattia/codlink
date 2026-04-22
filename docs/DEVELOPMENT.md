@@ -1,68 +1,60 @@
 # Development Guide
 
-## Prerequisites
+## Prerequisites (Linux)
 
-- **Xcode.app** (full install, not only Command Line Tools):
-
-  ```bash
-  sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-  ```
-
-- **Rust via rustup** with iOS targets. If Homebrew's `rust` formula is installed, its `cargo`/`rustc` will shadow rustup and break cross-compilation. Either `brew uninstall rust` or ensure `~/.cargo/bin` appears before `/opt/homebrew/bin` in your `PATH`.
+- **JDK 17** (Temurin 17 recommended).
+- **Android SDK** with:
+  - `platform-tools`
+  - `platforms;android-35`
+  - `build-tools;35.0.0`
+  - `ndk;30.0.14904198`
+  - Accepted licenses (`sdkmanager --licenses`).
+  - `ANDROID_SDK_ROOT` or `ANDROID_HOME` pointing at the SDK root.
+- **Rust via rustup** (NOT a distro `rust` package — it will shadow rustup cross-compilation targets):
 
   ```bash
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-  rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+  rustup target add aarch64-linux-android x86_64-linux-android
+  cargo install cargo-ndk --locked
   ```
 
-- **meson** + **ninja** (required by `webrtc-audio-processing-sys`):
+- **System libs** required by the vendored `webrtc-audio-processing-sys`:
 
   ```bash
-  brew install meson
+  sudo apt install pkg-config libssl-dev libcap-dev clang cmake meson ninja-build
   ```
 
-- **xcodegen** (for regenerating `Litter.xcodeproj`):
+- **`sccache`** (optional but recommended):
 
   ```bash
-  brew install xcodegen
+  cargo install sccache --locked
   ```
 
-## Connect Your Mac to Litter Over SSH
+  Make auto-detects sccache and routes compilation through it when present.
 
-Use this flow to make Codex sessions from your Mac visible in the iOS/Android app.
+## Connect a Dev Machine to Codlink Over SSH
 
-1. Enable SSH on the Mac.
+Make Codex sessions running on another machine visible in the Codlink app.
 
-   - UI: `System Settings` -> `General` -> `Sharing` -> enable `Remote Login`.
-   - CLI:
-     ```bash
-     sudo systemsetup -setremotelogin on
-     ```
-   - If you get a Full Disk Access error, grant it to your terminal app in `System Settings` -> `Privacy & Security` -> `Full Disk Access`, then restart terminal and retry.
-
-2. Verify SSH and Codex binaries from a non-interactive SSH shell.
+1. Enable SSH on the host machine.
+2. Verify SSH and Codex binaries from a non-interactive SSH shell:
 
    ```bash
-   ssh <mac-user>@<mac-host-or-ip> 'echo ok'
-   ssh <mac-user>@<mac-host-or-ip> 'command -v codex || command -v codex-app-server'
+   ssh <user>@<host> 'echo ok'
+   ssh <user>@<host> 'command -v codex || command -v codex-app-server'
    ```
 
    If the second command prints nothing, install Codex and/or fix shell PATH startup files.
 
-3. Connect from the Litter app.
+3. In Codlink: keep phone and host on the same LAN (or same Tailnet). In Discovery, tap a host showing `codex running` to connect directly, or tap an `SSH` host and enter credentials.
 
-   - Keep phone and Mac on the same LAN (or same Tailnet).
-   - In Discovery: tap a host showing `codex running` to connect directly, or tap an `SSH` host and enter credentials.
-
-4. Fallback: run app-server manually bound to loopback and forward the port over SSH.
-
-   On the Mac:
+4. Fallback — run app-server manually on the host and add the server manually in Codlink:
 
    ```bash
-   codex app-server --listen ws://127.0.0.1:8390
+   codex app-server --listen ws://0.0.0.0:8390
    ```
 
-   Then connect the phone via the `SSH` flow in Discovery — Litter opens the SSH connection, port-forwards `127.0.0.1:8390`, and connects through the tunnel. Do not bind `0.0.0.0` unless you fully understand the exposure; the SSH flow is the supported path.
+   Then in the app choose `Add Server` and enter `<host-ip>` + `8390`.
 
 5. Thread/session listing is `cwd`-scoped. If expected sessions are missing, choose the same working directory used when those sessions were created.
 
@@ -70,11 +62,12 @@ Use this flow to make Codex sessions from your Mac visible in the iOS/Android ap
 
 Upstream Codex is vendored as a submodule at `shared/third_party/codex`.
 
-Current local patch set (applied by `sync-codex.sh`):
+Current local patch set (applied by `tools/scripts/sync-codex.sh`):
 
-- `patches/codex/ios-exec-hook.patch`
 - `patches/codex/client-controlled-handoff.patch`
 - `patches/codex/mobile-code-mode-stub.patch`
+- `patches/codex/thread-read-permissions.patch`
+- `patches/codex/mobile-shell-snapshot-timeout.patch`
 
 Additional patches (not auto-applied):
 
@@ -84,7 +77,7 @@ Additional patches (not auto-applied):
 Sync/apply (idempotent):
 
 ```bash
-./apps/ios/scripts/sync-codex.sh
+./tools/scripts/sync-codex.sh
 ```
 
 Pass `--recorded-gitlink` to reset the submodule to the commit recorded in the superproject.
@@ -92,84 +85,35 @@ Pass `--recorded-gitlink` to reset the submodule to the commit recorded in the s
 ## Build the Rust Bridge
 
 ```bash
-./apps/ios/scripts/build-rust.sh              # package mode (device + sim + xcframework)
-./apps/ios/scripts/build-rust.sh --fast-device # raw device staticlib only
-```
-
-## Build and Run iOS
-
-Regenerate project if `apps/ios/project.yml` changed:
-
-```bash
-make xcgen
-```
-
-Open in Xcode:
-
-```bash
-open apps/ios/Litter.xcodeproj
-```
-
-CLI build:
-
-```bash
-xcodebuild -project apps/ios/Litter.xcodeproj -scheme Litter -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
+./tools/scripts/build-android-rust.sh     # arm64-v8a by default
+ANDROID_ABIS="arm64-v8a,x86_64" ./tools/scripts/build-android-rust.sh
 ```
 
 ## Build and Run Android
 
-Prerequisites: Java 17, Android SDK + build tools for API 35, Gradle 8.x.
-
 ```bash
-open -a "Android Studio" apps/android                                  # open in Android Studio
-cd apps/android && ./gradlew :app:testDebugUnitTest                    # run tests
-gradle -p apps/android :app:assembleOnDeviceDebug :app:assembleRemoteOnlyDebug  # build flavors
+make android                    # full Android debug build
+make android-emulator-fast      # host-ABI debug build for the local emulator
+make android-emulator-run       # build + install + launch on a running emulator
+make android-device-run         # build + install on a connected device, stream logcat
+cd apps/android && ./gradlew :app:testDebugUnitTest     # run unit tests
 ```
 
-## TestFlight (iOS)
+APK output: `apps/android/app/build/outputs/apk/debug/app-debug.apk`.
 
-1. Authenticate with App Store Connect:
+## Release APK Signing
 
-   ```bash
-   asc auth login \
-     --name "Litter ASC" \
-     --key-id "<KEY_ID>" \
-     --issuer-id "<ISSUER_ID>" \
-     --private-key "$HOME/AppStore.p8" \
-     --network
-   ```
+Set these env vars (or `-P` Gradle properties) for a signed release build:
 
-2. Bootstrap TestFlight defaults:
+- `CODLINK_UPLOAD_STORE_FILE`
+- `CODLINK_UPLOAD_STORE_PASSWORD`
+- `CODLINK_UPLOAD_KEY_ALIAS`
+- `CODLINK_UPLOAD_KEY_PASSWORD`
 
-   ```bash
-   APP_BUNDLE_ID=<BUNDLE_ID> ./apps/ios/scripts/testflight-setup.sh
-   ```
-
-3. Build and upload:
-
-   ```bash
-   APP_BUNDLE_ID=<BUNDLE_ID> \
-   APP_STORE_APP_ID=<APP_STORE_CONNECT_APP_ID> \
-   TEAM_ID=<APPLE_TEAM_ID> \
-   ASC_KEY_ID=<KEY_ID> \
-   ASC_ISSUER_ID=<ISSUER_ID> \
-   ASC_PRIVATE_KEY_PATH="$HOME/AppStore.p8" \
-   ./apps/ios/scripts/testflight-upload.sh
-   ```
-
-   - Reads `MARKETING_VERSION` from `apps/ios/project.yml`; auto-bumps patch if the version is already live.
-   - Auto-increments build number from the latest App Store Connect build.
-
-## App Store Release (iOS)
+Then:
 
 ```bash
-APP_BUNDLE_ID=<BUNDLE_ID> \
-APP_STORE_APP_ID=<APP_STORE_CONNECT_APP_ID> \
-TEAM_ID=<APPLE_TEAM_ID> \
-ASC_KEY_ID=<KEY_ID> \
-ASC_ISSUER_ID=<ISSUER_ID> \
-ASC_PRIVATE_KEY_PATH="$HOME/AppStore.p8" \
-./apps/ios/scripts/app-store-release.sh
+make android-release
 ```
 
-Metadata is sourced from `apps/ios/fastlane/metadata/en-US/`.
+If unset, Gradle builds an unsigned release APK.

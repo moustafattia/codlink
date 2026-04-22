@@ -62,9 +62,23 @@ impl IpcClient {
 
     /// Connect using a borrowed config (allows the caller to retain ownership
     /// for reconnection).
+    #[cfg(unix)]
     pub async fn connect_with_config(config: &IpcClientConfig) -> Result<Self, IpcError> {
         let stream = socket::connect_unix(&config.socket_path).await?;
         Self::connect_with_stream(config, stream).await
+    }
+
+    /// Connect using a borrowed config (allows the caller to retain ownership
+    /// for reconnection).
+    #[cfg(not(unix))]
+    pub async fn connect_with_config(config: &IpcClientConfig) -> Result<Self, IpcError> {
+        let _ = config;
+        Err(IpcError::Transport(TransportError::Io(
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Codex IPC uses Unix domain sockets and is unavailable on this platform",
+            ),
+        )))
     }
 
     /// Connect using any async stream that carries framed IPC traffic.

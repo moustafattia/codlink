@@ -6,10 +6,7 @@ static SHARED_MOBILE_CLIENT: OnceLock<Arc<MobileClient>> = OnceLock::new();
 static PLATFORM_INIT: OnceLock<()> = OnceLock::new();
 
 fn ensure_platform_init() {
-    PLATFORM_INIT.get_or_init(|| {
-        #[cfg(all(target_os = "ios", not(target_abi = "macabi")))]
-        crate::ios_exec::install();
-    });
+    PLATFORM_INIT.get_or_init(|| {});
 }
 
 pub(crate) fn shared_runtime() -> Arc<tokio::runtime::Runtime> {
@@ -19,8 +16,6 @@ pub(crate) fn shared_runtime() -> Arc<tokio::runtime::Runtime> {
             crate::logging::install_tracing_subscriber();
             Arc::new(
                 tokio::runtime::Builder::new_multi_thread()
-                    // iOS can hand us very small default thread stacks; large
-                    // recorded/replayed payloads can overflow them during serde.
                     .thread_stack_size(crate::MOBILE_ASYNC_THREAD_STACK_SIZE_BYTES)
                     .enable_all()
                     .build()

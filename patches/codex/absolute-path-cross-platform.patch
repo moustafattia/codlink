@@ -5,11 +5,11 @@ index 0de0f4e02..ba8df410f 100644
 @@ -180,6 +180,32 @@ impl Drop for AbsolutePathBufGuard {
      }
  }
- 
+
 +/// True when `path` looks absolute on _some_ platform even if `Path::is_absolute`
 +/// returns `false` on the current one. This lets a POSIX mobile client consume
 +/// Windows paths from a cross-platform RPC server (and vice versa) without
-+/// mangling them through `path_absolutize::Absolutize` — which would happily
++/// mangling them through `path_absolutize::Absolutize` â€” which would happily
 +/// join a Windows path onto a POSIX cwd.
 +fn looks_cross_platform_absolute(path: &Path) -> bool {
 +    let Some(s) = path.to_str() else {
