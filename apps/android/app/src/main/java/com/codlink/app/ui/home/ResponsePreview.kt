@@ -26,8 +26,6 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
-import com.codlink.app.ui.CodlinkTextStyle
-import com.codlink.app.ui.LocalTextScale
 import com.codlink.app.ui.conversation.StreamingMarkdownView
 
 /**
@@ -52,11 +50,6 @@ fun ResponsePreview(
     val configuration = LocalConfiguration.current
     val capFraction = if (zoomLevel >= 4) 0.5f else 0.25f
     val capDp = (configuration.screenHeightDp * capFraction).dp
-    // Pass the unscaled base size â€” StreamingMarkdownText reads
-    // LocalTextScale itself and applies it. Passing a pre-scaled value
-    // would double-scale the preview (17 Ã— scale Ã— scale).
-    val bodySize = CodlinkTextStyle.body
-
     Crossfade(
         targetState = blockId,
         animationSpec = tween(durationMillis = 300),
@@ -68,7 +61,6 @@ fun ResponsePreview(
                 text = text,
                 itemId = keyedId,
                 capDp = capDp,
-                bodySize = bodySize,
             )
         }
     }
@@ -79,7 +71,6 @@ private fun ShrinkOrCapMarkdown(
     text: String,
     itemId: String,
     capDp: androidx.compose.ui.unit.Dp,
-    bodySize: Float,
 ) {
     val density = LocalDensity.current
     val capPx = with(density) { capDp.roundToPx() }
@@ -105,7 +96,6 @@ private fun ShrinkOrCapMarkdown(
                 StreamingMarkdownView(
                     text = text,
                     itemId = "preview-$itemId",
-                    bodySize = bodySize,
                 )
             }
         }.first().measure(measureConstraints)
@@ -126,7 +116,6 @@ private fun ShrinkOrCapMarkdown(
                     StreamingMarkdownView(
                         text = text,
                         itemId = "preview-$itemId",
-                        bodySize = bodySize,
                     )
                 }
             }.first().measure(

@@ -188,6 +188,11 @@ fun ConversationTimelineItem(
             serverId = serverId,
         )
 
+        is HydratedConversationItemContent.ImageGeneration -> ImageGenerationRow(
+            data = content.v1,
+            serverId = serverId,
+        )
+
         is HydratedConversationItemContent.Widget -> WidgetRow(
             data = content.v1,
         )
@@ -222,6 +227,7 @@ private fun HydratedConversationItemContent.shouldAutoFollowRenderedContent(): B
         is HydratedConversationItemContent.MultiAgentAction,
         is HydratedConversationItemContent.WebSearch,
         is HydratedConversationItemContent.ImageView,
+        is HydratedConversationItemContent.ImageGeneration,
         is HydratedConversationItemContent.Widget -> true
         else -> false
     }
@@ -923,6 +929,74 @@ private fun ImageViewRow(
     ) {
         ImageResultSection(path = data.path, serverId = serverId)
         KeyValueSection("Metadata", listOf("Path" to data.path))
+    }
+}
+
+@Composable
+private fun ImageGenerationRow(
+    data: uniffi.codex_mobile_client.HydratedImageGenerationData,
+    serverId: String,
+) {
+    val prompt = data.revisedPrompt?.takeIf { it.isNotBlank() }
+    val savedPath = data.savedPath
+    val imageBytes = data.imagePng
+    val summary = prompt ?: savedPath?.let(::workspaceTitle) ?: "Image generation"
+    val metadata = listOfNotNull(savedPath?.let { "Path" to it })
+
+    ToolCardShell(
+        summary = summary,
+        accent = CodlinkTheme.warning,
+        status = data.status,
+        defaultExpanded = true,
+    ) {
+        prompt?.let { InlineTextSection("Prompt", it) }
+
+        when {
+            imageBytes != null -> {
+                val bitmap = remember(imageBytes) {
+                    BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SectionLabel("Image")
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(CodlinkTheme.codeBackground, RoundedCornerShape(10.dp))
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        bitmap?.let {
+                            Image(
+                                bitmap = it.asImageBitmap(),
+                                contentDescription = summary,
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 320.dp)
+                                    .clip(RoundedCornerShape(8.dp)),
+                            )
+                        } ?: Text(
+                            text = "Failed to decode generated image",
+                            color = CodlinkTheme.danger,
+                            fontSize = CodlinkTextStyle.caption.scaled,
+                            modifier = Modifier.padding(vertical = 20.dp),
+                        )
+                    }
+                }
+            }
+
+            savedPath != null -> ImageResultSection(
+                path = savedPath,
+                serverId = serverId,
+            )
+
+            data.status == AppOperationStatus.PENDING ||
+                data.status == AppOperationStatus.IN_PROGRESS -> {
+                InlineTextSection("Status", "Generating image...")
+            }
+        }
+
+        KeyValueSection("Metadata", metadata)
     }
 }
 
