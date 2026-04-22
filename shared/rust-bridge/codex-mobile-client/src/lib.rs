@@ -3,6 +3,8 @@
 //! This crate owns the single public UniFFI surface used by the Kotlin app.
 
 pub mod ambient_suggestions;
+#[cfg(target_os = "android")]
+pub mod android_exec;
 pub mod conversation;
 pub mod conversation_uniffi;
 pub mod discovery;
